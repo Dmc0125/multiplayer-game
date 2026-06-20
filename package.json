@@ -1,0 +1,31 @@
+{
+    "name": "multiplayer-game",
+    "version": "1.0.0",
+    "description": "",
+    "main": "index.js",
+    "scripts": {
+        "prepare": "husky"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "devEngines": {
+        "packageManager": {
+            "name": "pnpm",
+            "version": "^11.0.6",
+            "onFail": "download"
+        }
+    },
+    "type": "module",
+    "devDependencies": {
+        "husky": "^9.1.7",
+        "lint-staged": "^17.0.7",
+        "prettier": "^3.8.4",
+        "prettier-plugin-astro": "^0.14.1"
+    },
+    "lint-staged": {
+        "*.{js,jsx,ts,tsx,html,css,json,md,astro}": [
+            "prettier -w"
+        ]
+    }
+}
