@@ -1,1 +1,53 @@
 @import "tailwindcss";
+
+@theme {
+    --color-orange: #dd6e42;
+    --color-yellow: #e8dab2;
+    --color-dark: #353535;
+    --color-light: #eaeaea;
+}
+
+@font-face {
+    font-family: "Press Start 2P";
+    src: url("/PressStart2P-Regular.ttf");
+}
+
+* {
+    font-family: "Press Start 2P";
+}
+
+button {
+    @apply cursor-pointer;
+}
+
+.btn {
+    @apply px-8 py-3
+        bg-light border-4 border-orange text-orange text-sm
+        tracking-widest uppercase
+        transition-all duration-150 ease-in-out
+        shadow-[0_0_12px_theme(colors.orange/40%)]
+        hover:bg-orange hover:text-dark hover:shadow-[0_0_24px_theme(colors.orange/70%)]
+        active:translate-y-0.5 active:shadow-[0_0_6px_theme(colors.orange/40%)];
+}
+
+.canvas-wrapper {
+    @apply border-4
+        border-orange
+        shadow-[0_0_30px_theme(colors.orange/50%),0_0_60px_theme(colors.orange/20%)]
+        bg-dark;
+}
+
+.canvas-wrapper::after {
+    content: "";
+    @apply absolute
+        inset-0
+        pointer-events-none
+        opacity-10;
+    background: repeating-linear-gradient(
+        to bottom,
+        transparent,
+        transparent 2px,
+        #000 2px,
+        #000 4px
+    );
+}

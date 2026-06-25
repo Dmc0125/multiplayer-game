@@ -1,0 +1,159 @@
+---
+import Layout from "../Layout.astro"
+---
+
+<Layout>
+    <div class="pt-[10%] flex flex-col items-center justify-center gap-8">
+        <h1 class="text-dark text-2xl font-bold">Singleplayer</h1>
+        <div class="relative w-full max-w-[800px] aspect-[2/1] mx-auto canvas-wrapper">
+            <canvas id="canvas" class="w-full aspect-[2/1]"></canvas>
+            <div class="absolute inset-0 flex items-center justify-center">
+                <p id="msg-connecting" class="text-white">Connecting</p>
+            </div>
+        </div>
+    </div>
+</Layout>
+
+<script>
+    const canvas = document.getElementById("canvas") as HTMLCanvasElement
+    const ctx = canvas.getContext("2d")!
+
+    function resizeCanvas() {
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+
+        const r = canvas.getBoundingClientRect()
+        canvas.width = r.width
+        canvas.height = r.height
+
+        const scaleX = canvas.width / 800
+        const scaleY = canvas.height / 400
+        ctx.scale(scaleX, scaleY)
+    }
+
+    window.addEventListener("DOMContentLoaded", resizeCanvas)
+    window.addEventListener("resize", resizeCanvas)
+
+    const gameWidth = 800
+    const gameHeight = 400
+
+    let connId: number | null = null
+
+    // ws
+
+    const MESSAGE_TYPE_CONN_ID = 0
+    const MESSAGE_TYPE_START = 1
+    const MESSAGE_TYPE_END = 2
+    const MESSAGE_TYPE_GAME_STATE = 3
+    const MESSAGE_TYPE_KEY = 4
+
+    const keyCodeMap: Record<string, number> = {
+        ArrowUp: 0,
+        ArrowDown: 1,
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+        const ws = new WebSocket("ws://localhost:8080/ws")
+        ws.binaryType = "arraybuffer"
+
+        function encodeKeyMsg(keyCode: number, down: boolean): Uint8Array<ArrayBuffer> {
+            const data = new Uint8Array(3)
+            const view = new DataView(data.buffer)
+            view.setUint8(0, MESSAGE_TYPE_KEY)
+            view.setUint8(1, keyCode)
+            view.setUint8(2, down ? 1 : 0)
+            return data
+        }
+
+        window.addEventListener("keydown", (event) => {
+            if (ws.readyState === ws.OPEN) {
+                const keyCode = keyCodeMap[event.key]
+                if (keyCode !== undefined) {
+                    ws.send(encodeKeyMsg(keyCode, true))
+                }
+            }
+        })
+
+        window.addEventListener("keyup", (event) => {
+            if (ws.readyState === ws.OPEN) {
+                const keyCode = keyCodeMap[event.key]
+                if (keyCode !== undefined) {
+                    ws.send(encodeKeyMsg(keyCode, false))
+                }
+            }
+        })
+
+        ws.onmessage = function (event) {
+            const data = event.data
+            if (!(data instanceof ArrayBuffer)) {
+                return
+            }
+
+            const view = new DataView(data)
+            const messageType = view.getUint8(0)
+
+            switch (messageType) {
+                case MESSAGE_TYPE_CONN_ID: {
+                    const connectingMessageElement = document.getElementById("msg-connecting")!
+                    connectingMessageElement.classList.add("hidden")
+
+                    connId = view.getUint32(1, true)
+
+                    const startMessageData = new Uint8Array(2)
+                    startMessageData[0] = MESSAGE_TYPE_START
+                    startMessageData[1] = 0
+                    ws.send(startMessageData)
+
+                    break
+                }
+                case MESSAGE_TYPE_START:
+                case MESSAGE_TYPE_GAME_STATE: {
+                    ctx.clearRect(0, 0, gameWidth, gameHeight)
+
+                    let offset = 1
+
+                    function decodef32(): number {
+                        const f = view.getFloat32(offset, true)
+                        offset += 4
+                        return f
+                    }
+
+                    // paddles
+
+                    for (let i = 0; i < 2; i++) {
+                        const c = view.getUint32(offset, true)
+                        offset += 4
+
+                        const paddleX = decodef32()
+                        const paddleY = decodef32()
+                        const paddleWidth = decodef32()
+                        const paddleHeight = decodef32()
+
+                        ctx.fillStyle = "rgb(255, 0, 0)"
+                        if (c === connId) {
+                            ctx.fillStyle = "rgb(0, 0, 255)"
+                        }
+
+                        const y = gameHeight - paddleY - paddleHeight
+                        ctx.beginPath()
+                        ctx.roundRect(paddleX, y, paddleWidth, paddleHeight, 10)
+                        ctx.fill()
+                    }
+
+                    // ball
+
+                    const ballX = decodef32()
+                    const ballY = decodef32()
+                    const ballRadius = decodef32()
+
+                    ctx.fillStyle = "rgb(255, 0, 0)"
+                    ctx.beginPath()
+                    const y = gameHeight - ballY
+                    ctx.arc(ballX, y, ballRadius, 0, 2 * Math.PI)
+                    ctx.fill()
+
+                    break
+                }
+            }
+        }
+    })
+</script>
