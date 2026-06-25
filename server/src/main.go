@@ -21,6 +21,7 @@ type MessageType uint8
 const (
 	MessageTypeConnId MessageType = iota
 	MessageTypeGameStart
+	MessageTypeGameRestart
 	MessageTypeGameEnd
 	MessageTypeGameState
 	MessageTypeKey
@@ -58,9 +59,10 @@ type JoinMessage struct {
 }
 
 type GameLoop struct {
-	joinChan  chan JoinMessage
-	leaveChan chan ConnId
-	inputChan chan GameInput
+	joinChan    chan JoinMessage
+	leaveChan   chan ConnId
+	inputChan   chan GameInput
+	restartChan chan struct{}
 }
 
 const (
@@ -75,7 +77,7 @@ const (
 	PADDLE_LEFT_X  = 50.0
 	PADDLE_RIGHT_X = GAME_WIDTH - 50.0
 
-	BALL_SPEED_PER_SECOND = 400.0
+	BALL_SPEED_PER_SECOND = 500.0
 	BALL_RADIUS           = 5.0
 )
 
@@ -216,6 +218,32 @@ func (gl *GameLoop) run() {
 		return 0, false
 	}
 
+	startGame := func() {
+		gameRunning = true
+		elapsedTime = 0.0
+		deltaTime = 0.0
+
+		// paddles
+		for _, p := range players {
+			p.paddle.y = GAME_HEIGHT/2 - p.paddle.height/2
+		}
+
+		// ball
+		ball.radius = BALL_RADIUS
+		ball.x = GAME_WIDTH/2 - ball.radius/2
+		ball.y = GAME_HEIGHT/2 - ball.radius/2
+
+		deg := (rand.Float32() * 90) - 45
+		if rand.Float32() < 0.5 {
+			deg += 180
+		}
+		rad := float64(deg * math.Pi / 180)
+		ball.vx = float32(math.Cos(rad)) * BALL_SPEED_PER_SECOND
+		ball.vy = float32(math.Sin(rad)) * BALL_SPEED_PER_SECOND
+
+		broadcast(MessageTypeGameStart, stateEncode())
+	}
+
 	for {
 		select {
 		case j := <-gl.joinChan:
@@ -224,33 +252,6 @@ func (gl *GameLoop) run() {
 				j.Conn.Close(websocket.StatusNormalClosure, "Error: game already running")
 			} else {
 				join(j.ConnId, false, j.Conn)
-
-				startGame := func() {
-					// start game
-					gameRunning = true
-					elapsedTime = 0.0
-					deltaTime = 0.0
-
-					// paddles
-					for _, p := range players {
-						p.paddle.y = GAME_HEIGHT/2 - p.paddle.height/2
-					}
-
-					// ball
-					ball.radius = BALL_RADIUS
-					ball.x = GAME_WIDTH/2 - ball.radius/2
-					ball.y = GAME_HEIGHT/2 - ball.radius/2
-
-					deg := (rand.Float32() * 90) - 45
-					if rand.Float32() < 0.5 {
-						deg += 180
-					}
-					rad := float64(deg * math.Pi / 180)
-					ball.vx = float32(math.Cos(rad)) * BALL_SPEED_PER_SECOND
-					ball.vy = float32(math.Sin(rad)) * BALL_SPEED_PER_SECOND
-
-					broadcast(MessageTypeGameStart, stateEncode())
-				}
 
 				if len(players) == 1 && j.Singleplayer {
 					join(nextConnId(), true, nil)
@@ -268,6 +269,10 @@ func (gl *GameLoop) run() {
 		case inp := <-gl.inputChan:
 			p := players[inp.connId]
 			p.keys[inp.keyCode] = inp.pressed
+		case <-gl.restartChan:
+			if !gameRunning {
+				startGame()
+			}
 		default:
 			{ // update
 				dt := float32(deltaTime)
@@ -313,89 +318,104 @@ func (gl *GameLoop) run() {
 						}()
 					}
 
-					// ball
-					ball.x += ball.vx * dt
-					ball.y += ball.vy * dt
+					func() {
+						sendState := true
+						defer func() {
+							if sendState {
+								broadcast(MessageTypeGameState, stateEncode())
+							}
+						}()
 
-					switch {
-					case ball.x-ball.radius < 0:
-						ball.x = ball.radius
-						ball.vx = -ball.vx
-					case ball.x+ball.radius > GAME_WIDTH:
-						ball.x = GAME_WIDTH - ball.radius
-						ball.vx = -ball.vx
-					case ball.y-ball.radius < 0:
-						ball.y = ball.radius
-						ball.vy = -ball.vy
-					case ball.y+ball.radius > GAME_HEIGHT:
-						ball.y = GAME_HEIGHT - ball.radius
-						ball.vy = -ball.vy
-					}
+						// ball
+						ball.x += ball.vx * dt
+						ball.y += ball.vy * dt
 
-					// ball collision with paddles
-
-					for _, p := range players {
-						ballLeft := ball.x - ball.radius
-						ballRight := ball.x + ball.radius
-						ballTop := ball.y + ball.radius
-						ballBottom := ball.y - ball.radius
-
-						paddleLeft := p.paddle.x
-						paddleRight := p.paddle.x + p.paddle.width
-						paddleTop := p.paddle.y + p.paddle.height
-						paddleBottom := p.paddle.y
-
-						xInside := ballRight > paddleLeft && ballLeft < paddleRight
-						yInside := ballTop > paddleBottom && ballBottom < paddleTop
-
-						if !(xInside && yInside) {
-							continue
-						}
-
-						overlapLeft := ballRight - paddleLeft
-						overlapRight := paddleRight - ballLeft
-						overlapTop := paddleTop - ballBottom
-						overlapBottom := ballTop - paddleBottom
-
-						xMin := float32(math.Min(float64(overlapLeft), float64(overlapRight)))
-						yMin := float32(math.Min(float64(overlapTop), float64(overlapBottom)))
-
-						bounceAngle := func(vxDir float32) (vx, vy float32) {
-							paddleHalfHeight := p.paddle.height / 2
-							paddleCenter := p.paddle.y + paddleHalfHeight
-							hit := ball.y - paddleCenter
-
-							rel := float32(math.Max(-1, math.Min(1, float64(hit/paddleHalfHeight))))
-							angle := 55 * rel
-
-							rad := float64(angle * math.Pi / 180)
-							vx = float32(math.Cos(rad)) * BALL_SPEED_PER_SECOND * vxDir
-							vy = float32(math.Sin(rad)) * BALL_SPEED_PER_SECOND
-
+						switch {
+						case ball.x-ball.radius < 0:
+							// player right wins
+							sendState = false
+							broadcast(MessageTypeGameEnd, []byte{1})
+							gameRunning = false
+							return
+						case ball.x+ball.radius > GAME_WIDTH:
+							// player left wins
+							sendState = false
+							broadcast(MessageTypeGameEnd, []byte{0})
+							gameRunning = false
+							return
+						case ball.y-ball.radius < 0:
+							ball.y = ball.radius
+							ball.vy = -ball.vy
+							return
+						case ball.y+ball.radius > GAME_HEIGHT:
+							ball.y = GAME_HEIGHT - ball.radius
+							ball.vy = -ball.vy
 							return
 						}
 
-						if xMin < yMin {
-							if overlapLeft < overlapRight {
-								ball.x = paddleLeft - ball.radius
-								ball.vx, ball.vy = bounceAngle(-1)
-							} else {
-								ball.x = paddleRight + ball.radius
-								ball.vx, ball.vy = bounceAngle(1)
+						// ball collision with paddles
+
+						for _, p := range players {
+							ballLeft := ball.x - ball.radius
+							ballRight := ball.x + ball.radius
+							ballTop := ball.y + ball.radius
+							ballBottom := ball.y - ball.radius
+
+							paddleLeft := p.paddle.x
+							paddleRight := p.paddle.x + p.paddle.width
+							paddleTop := p.paddle.y + p.paddle.height
+							paddleBottom := p.paddle.y
+
+							xInside := ballRight > paddleLeft && ballLeft < paddleRight
+							yInside := ballTop > paddleBottom && ballBottom < paddleTop
+
+							if !(xInside && yInside) {
+								continue
 							}
-						} else {
-							if overlapTop < overlapBottom {
-								ball.y = paddleTop + ball.radius
-							} else {
-								ball.y = paddleBottom - ball.radius
+
+							overlapLeft := ballRight - paddleLeft
+							overlapRight := paddleRight - ballLeft
+							overlapTop := paddleTop - ballBottom
+							overlapBottom := ballTop - paddleBottom
+
+							xMin := float32(math.Min(float64(overlapLeft), float64(overlapRight)))
+							yMin := float32(math.Min(float64(overlapTop), float64(overlapBottom)))
+
+							bounceAngle := func(vxDir float32) (vx, vy float32) {
+								paddleHalfHeight := p.paddle.height / 2
+								paddleCenter := p.paddle.y + paddleHalfHeight
+								hit := ball.y - paddleCenter
+
+								rel := float32(math.Max(-1, math.Min(1, float64(hit/paddleHalfHeight))))
+								angle := 55 * rel
+
+								rad := float64(angle * math.Pi / 180)
+								vx = float32(math.Cos(rad)) * BALL_SPEED_PER_SECOND * vxDir
+								vy = float32(math.Sin(rad)) * BALL_SPEED_PER_SECOND
+
+								return
 							}
-							ball.vy = -ball.vy
+
+							if xMin < yMin {
+								if overlapLeft < overlapRight {
+									ball.x = paddleLeft - ball.radius
+									ball.vx, ball.vy = bounceAngle(-1)
+								} else {
+									ball.x = paddleRight + ball.radius
+									ball.vx, ball.vy = bounceAngle(1)
+								}
+							} else {
+								if overlapTop < overlapBottom {
+									ball.y = paddleTop + ball.radius
+								} else {
+									ball.y = paddleBottom - ball.radius
+								}
+								ball.vy = -ball.vy
+							}
+
+							break
 						}
-
-						break
-					}
-
-					broadcast(MessageTypeGameState, stateEncode())
+					}()
 				}
 			}
 
@@ -470,6 +490,8 @@ func wsHandler(gl *GameLoop) func(http.ResponseWriter, *http.Request) {
 			case MessageTypeGameStart:
 				singleplayer := bytes[1] == 0
 				gl.joinChan <- JoinMessage{connId, conn, cancel, singleplayer}
+			case MessageTypeGameRestart:
+				gl.restartChan <- struct{}{}
 			case MessageTypeKey:
 				gl.inputChan <- GameInput{connId, KeyCode(bytes[1]), bytes[2] == 1}
 			case MessageTypeLeave:
@@ -484,9 +506,10 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	game := GameLoop{
-		joinChan:  make(chan JoinMessage),
-		leaveChan: make(chan ConnId),
-		inputChan: make(chan GameInput),
+		joinChan:    make(chan JoinMessage),
+		leaveChan:   make(chan ConnId),
+		inputChan:   make(chan GameInput),
+		restartChan: make(chan struct{}),
 	}
 	go game.run()
 	http.HandleFunc("/ws", wsHandler(&game))

@@ -27,7 +27,15 @@ button {
         transition-all duration-150 ease-in-out
         shadow-[0_0_12px_theme(colors.orange/40%)]
         hover:bg-orange hover:text-dark hover:shadow-[0_0_24px_theme(colors.orange/70%)]
-        active:translate-y-0.5 active:shadow-[0_0_6px_theme(colors.orange/40%)];
+        active:translate-y-0.5 active:shadow-[0_0_6px_theme(colors.orange/40%)]
+        disabled:pointer-events-none
+        disabled:border-dark
+        disabled:text-dark
+        disabled:shadow-none
+        disabled:hover:bg-transparent
+        disabled:hover:text-dark
+        disabled:hover:shadow-none
+        disabled:active:translate-y-0;
 }
 
 .canvas-wrapper {
@@ -42,7 +50,7 @@ button {
     @apply absolute
         inset-0
         pointer-events-none
-        opacity-10;
+        opacity-20;
     background: repeating-linear-gradient(
         to bottom,
         transparent,
