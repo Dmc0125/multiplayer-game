@@ -233,13 +233,17 @@ func (gl *GameLoop) run() {
 		ball.x = GAME_WIDTH/2 - ball.radius/2
 		ball.y = GAME_HEIGHT/2 - ball.radius/2
 
-		deg := (rand.Float32() * 90) - 45
-		if rand.Float32() < 0.5 {
-			deg += 180
+		{ // ball velocity
+			deg := rand.Float32()*30 - 15 // [-15, 15]
+			rad := float64(deg * math.Pi / 180)
+
+			ball.vx = float32(math.Cos(rad)) * BALL_SPEED_PER_SECOND
+			ball.vy = float32(math.Sin(rad)) * BALL_SPEED_PER_SECOND
+
+			if rand.Float32() < 0.5 {
+				ball.vx = -ball.vx
+			}
 		}
-		rad := float64(deg * math.Pi / 180)
-		ball.vx = float32(math.Cos(rad)) * BALL_SPEED_PER_SECOND
-		ball.vy = float32(math.Sin(rad)) * BALL_SPEED_PER_SECOND
 
 		broadcast(MessageTypeGameStart, stateEncode())
 	}

@@ -20,7 +20,26 @@ import Layout from "../Layout.astro"
                 class="absolute inset-0 flex flex-col gap-4 items-center justify-center hidden z-1"
             >
                 <p class="text-light text-lg">Player <span id="player-number"></span> scores</p>
-                <button id="btn-play-again" class="btn">Play again</button>
+                <button id="btn-play-again" class="btn">Play again (r)</button>
+            </div>
+        </div>
+
+        <div class="flex gap-8 items-center w-fit mx-auto mt-6">
+            <div class="flex flex-col items-center gap-2">
+                <div class="bg-dark w-fit p-2 rounded">
+                    <svg class="size-4 text-light">
+                        <use href="/icons.svg#arrow-up"></use>
+                    </svg>
+                </div>
+                <p class="text-xs">up</p>
+            </div>
+            <div class="flex flex-col items-center gap-2">
+                <div class="bg-dark w-fit p-2 rounded">
+                    <svg class="size-4 text-light rotate-180">
+                        <use href="/icons.svg#arrow-up"></use>
+                    </svg>
+                </div>
+                <p class="text-xs">down</p>
             </div>
         </div>
     </div>
@@ -64,6 +83,9 @@ import Layout from "../Layout.astro"
         ArrowDown: 1,
     }
 
+    const messageGameEnd = document.getElementById("message-game-end") as HTMLDivElement
+    const btnPlayAgain = document.getElementById("btn-play-again") as HTMLButtonElement
+
     window.addEventListener("DOMContentLoaded", () => {
         const ws = new WebSocket("ws://localhost:8080/ws")
         ws.binaryType = "arraybuffer"
@@ -79,6 +101,12 @@ import Layout from "../Layout.astro"
 
         window.addEventListener("keydown", (event) => {
             if (ws.readyState === ws.OPEN) {
+                if (event.key === "r" && !messageGameEnd.classList.contains("hidden")) {
+                    ws.send(new Uint8Array([MESSAGE_TYPE_GAME_RESTART]))
+                    messageGameEnd.classList.add("hidden")
+                    return
+                }
+
                 const keyCode = keyCodeMap[event.key]
                 if (keyCode !== undefined) {
                     ws.send(encodeKeyMsg(keyCode, true))
@@ -95,13 +123,8 @@ import Layout from "../Layout.astro"
             }
         })
 
-        const messageGameEnd = document.getElementById("message-game-end") as HTMLDivElement
-        const btnPlayAgain = document.getElementById("btn-play-again") as HTMLButtonElement
         btnPlayAgain.addEventListener("click", () => {
-            const data = new Uint8Array(1)
-            data[0] = MESSAGE_TYPE_GAME_RESTART
-            ws.send(data)
-
+            ws.send(new Uint8Array([MESSAGE_TYPE_GAME_RESTART]))
             messageGameEnd.classList.add("hidden")
         })
 
