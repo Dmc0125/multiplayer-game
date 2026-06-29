@@ -62,7 +62,7 @@ type GameLoop struct {
 	joinChan    chan JoinMessage
 	leaveChan   chan ConnId
 	inputChan   chan GameInput
-	restartChan chan struct{}
+	restartChan chan ConnId
 }
 
 const (
@@ -98,11 +98,13 @@ type PlayerState struct {
 	keys       map[KeyCode]bool
 	paddle     Paddle
 	bot        bool
+	restart    bool
 }
 
 func (gl *GameLoop) run() {
 	leftMissing := true
 	players := make(map[ConnId]*PlayerState)
+	singleplayer := false
 	var ball Ball
 
 	startTime := time.Now()
@@ -259,6 +261,7 @@ func (gl *GameLoop) run() {
 
 				if len(players) == 1 && j.Singleplayer {
 					join(nextConnId(), true, nil)
+					singleplayer = true
 					startGame()
 				}
 
@@ -268,14 +271,42 @@ func (gl *GameLoop) run() {
 			}
 		case connId := <-gl.leaveChan:
 			gameRunning = false
+			if singleplayer {
+				for c, p := range players {
+					if p.bot {
+						leave(c)
+						break
+					}
+				}
+			} else {
+				broadcast(MessageTypeLeave, nil)
+			}
+
 			leave(connId)
-			broadcast(MessageTypeGameEnd, nil)
 		case inp := <-gl.inputChan:
 			p := players[inp.connId]
 			p.keys[inp.keyCode] = inp.pressed
-		case <-gl.restartChan:
+		case connId := <-gl.restartChan:
 			if !gameRunning {
-				startGame()
+				if singleplayer {
+					startGame()
+				} else {
+					players[connId].restart = true
+					playersReady := true
+					for _, p := range players {
+						if !p.restart {
+							playersReady = false
+							break
+						}
+					}
+
+					if playersReady {
+						startGame()
+						for _, p := range players {
+							p.restart = false
+						}
+					}
+				}
 			}
 		default:
 			{ // update
@@ -495,7 +526,7 @@ func wsHandler(gl *GameLoop) func(http.ResponseWriter, *http.Request) {
 				singleplayer := bytes[1] == 0
 				gl.joinChan <- JoinMessage{connId, conn, cancel, singleplayer}
 			case MessageTypeGameRestart:
-				gl.restartChan <- struct{}{}
+				gl.restartChan <- connId
 			case MessageTypeKey:
 				gl.inputChan <- GameInput{connId, KeyCode(bytes[1]), bytes[2] == 1}
 			case MessageTypeLeave:
@@ -513,7 +544,7 @@ func main() {
 		joinChan:    make(chan JoinMessage),
 		leaveChan:   make(chan ConnId),
 		inputChan:   make(chan GameInput),
-		restartChan: make(chan struct{}),
+		restartChan: make(chan ConnId),
 	}
 	go game.run()
 	http.HandleFunc("/ws", wsHandler(&game))

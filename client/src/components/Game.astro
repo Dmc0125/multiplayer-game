@@ -1,0 +1,45 @@
+<div class="w-full max-w-[800px] mt-10">
+    <div class="w-full max-w-[800px] flex items-center justify-between">
+        <p class="text-xs sm:text-base">Player 1: <span id="player1-score">0</span></p>
+        <p class="text-xs sm:text-base">Player 2: <span id="player2-score">0</span></p>
+    </div>
+
+    <div class="relative w-full max-w-[800px] mt-6 aspect-[2/1] mx-auto canvas-wrapper">
+        <canvas id="canvas" class="w-full aspect-[2/1]"></canvas>
+
+        <div class="absolute inset-0 flex items-center justify-center">
+            <p id="msg-connecting" class="text-white">Connecting</p>
+            <p id="msg-waiting" class="text-white hidden">Waiting for other player</p>
+        </div>
+
+        <div
+            id="message-game-end"
+            class="hidden absolute inset-0 flex flex-col gap-4 items-center justify-center z-1"
+        >
+            <p class="text-light text-sm sm:text-lg">
+                Player <span id="player-number"></span> scores
+            </p>
+            <button id="btn-play-again" class="btn">Play again (r)</button>
+        </div>
+    </div>
+
+    <!-- arrows icons -->
+    <div class="flex gap-8 items-center w-fit mx-auto mt-6">
+        <div class="flex flex-col items-center gap-2">
+            <div class="bg-dark w-fit p-2 rounded">
+                <svg class="size-4 text-light">
+                    <use href="/icons.svg#arrow-up"></use>
+                </svg>
+            </div>
+            <p class="text-xs">up</p>
+        </div>
+        <div class="flex flex-col items-center gap-2">
+            <div class="bg-dark w-fit p-2 rounded">
+                <svg class="size-4 text-light rotate-180">
+                    <use href="/icons.svg#arrow-up"></use>
+                </svg>
+            </div>
+            <p class="text-xs">down</p>
+        </div>
+    </div>
+</div>
