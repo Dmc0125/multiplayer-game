@@ -2,16 +2,24 @@ package main
 
 import (
 	"context"
+	crypto "crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math"
 	"math/rand"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/jackc/pgx/v5"
+	"github.com/joho/godotenv"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 const PORT = ":8080"
@@ -537,8 +545,199 @@ func wsHandler(gl *GameLoop) func(http.ResponseWriter, *http.Request) {
 	}
 }
 
+// auth
+
+var authConfig *oauth2.Config
+
+func authHandler(w http.ResponseWriter, r *http.Request) {
+	state := os.Getenv("OAUTH_STATE")
+	url := authConfig.AuthCodeURL(state)
+	http.Redirect(http.ResponseWriter(w), r, url, http.StatusFound)
+}
+
+func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		state := r.URL.Query().Get("state")
+		if state != os.Getenv("OAUTH_STATE") {
+			http.Error(w, "Error: invalid state", http.StatusBadRequest)
+			return
+		}
+
+		code := r.URL.Query().Get("code")
+		token, err := authConfig.Exchange(context.Background(), code)
+		if err != nil {
+			log.Printf("Error: unable to exchange code for token: %s", err)
+			http.Error(w, "Error: unable to exchange code for token", http.StatusInternalServerError)
+			return
+		}
+
+		client := authConfig.Client(r.Context(), token)
+		resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
+		if err != nil {
+			log.Printf("Error: unable to get user info: %s", err)
+			http.Error(w, "Error: unable to get user info", http.StatusInternalServerError)
+			return
+		}
+		defer resp.Body.Close()
+
+		var userInfo struct {
+			Email   string `json:"email"`
+			Name    string `json:"name"`
+			Picture string `json:"picture"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
+			log.Printf("Error: unable to decode user info: %s", err)
+			http.Error(w, "Error: unable to decode user info", http.StatusInternalServerError)
+			return
+		}
+
+		insertedUser := dbConn.QueryRow(
+			r.Context(),
+			`
+			insert into users (google_email, google_name, google_avatar_url) values ($1, $2, $3) 
+			on conflict (google_email) do nothing returning id
+			`,
+			userInfo.Email,
+			userInfo.Name,
+			userInfo.Picture,
+		)
+
+		var userId int
+		var sessionId string
+		insertSession := true
+
+		if err := insertedUser.Scan(&userId); err != nil && err.Error() != "pq: duplicate key value violates unique constraint \"users_google_email_key\"" {
+			// already exists
+			user := dbConn.QueryRow(r.Context(), "select id from users where google_email = $1", userInfo.Email)
+			if err := user.Scan(&userId); err != nil {
+				log.Printf("Error: unable to get user: %s", err)
+				http.Error(w, "Error: unable to get user", http.StatusInternalServerError)
+				return
+			}
+
+			session := dbConn.QueryRow(
+				r.Context(),
+				"select id from sessions where user_id = $1 and expires_at > now()",
+				userId,
+			)
+			err := session.Scan(&sessionId)
+			switch {
+			case err == nil:
+				insertSession = false
+			case !errors.Is(err, pgx.ErrNoRows) && err != nil:
+				log.Printf("Error: unable to get session: %s", err)
+				http.Error(w, "Error: unable to get session", http.StatusInternalServerError)
+				return
+			}
+		} else if err != nil {
+			log.Printf("Error: unable to insert user: %s", err)
+			http.Error(w, "Error: unable to insert user", http.StatusInternalServerError)
+			return
+		}
+
+		if insertSession {
+			sid := make([]byte, 32)
+			if _, err := crypto.Read(sid); err != nil {
+				log.Printf("Error: unable to generate session id: %s", err)
+				http.Error(w, "Error: unable to generate session id", http.StatusInternalServerError)
+				return
+			}
+			sessionId = hex.EncodeToString(sid)
+
+			expiresAt := time.Now().Add(time.Hour * 24 * 7)
+			_, err := dbConn.Exec(
+				r.Context(),
+				"insert into sessions (id, user_id, expires_at) values ($1, $2, $3)",
+				sessionId,
+				userId,
+				expiresAt,
+			)
+			if err != nil {
+				log.Printf("Error: unable to insert session: %s", err)
+				http.Error(w, "Error: unable to insert session", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		// TODO: modify config when in prod
+		isProd := os.Getenv("ENV") == "prod"
+		http.SetCookie(w, &http.Cookie{
+			Name:     "session_id",
+			Value:    sessionId,
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   isProd,
+			SameSite: http.SameSiteLaxMode,
+		})
+		http.Redirect(w, r, os.Getenv("CLIENT_REDIRECT_URL"), http.StatusPermanentRedirect)
+	}
+}
+
+func authLogoutHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sessionId, err := r.Cookie("session_id")
+		if err != nil {
+			log.Printf("Error: unable to get session id: %s", err)
+			http.Error(w, "Error: unable to get session id", http.StatusInternalServerError)
+			return
+		}
+		if sessionId != nil {
+			_, err := dbConn.Exec(
+				r.Context(),
+				"delete from sessions where id = $1",
+				sessionId.Value,
+			)
+			if err != nil {
+				log.Printf("Error: unable to delete session: %s", err)
+				http.Error(w, "Error: unable to delete session", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		http.SetCookie(w, &http.Cookie{
+			Name:     "session_id",
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   false,
+			SameSite: http.SameSiteLaxMode,
+		})
+		http.Redirect(w, r, os.Getenv("CLIENT_REDIRECT_URL"), http.StatusPermanentRedirect)
+	}
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warn: unable to load .env: %s\n", err)
+	}
+
+	dbUrl := fmt.Sprintf(
+		"postgresql://%s:%s@%s:%s/%s",
+		os.Getenv("DB_USER"),
+		os.Getenv("DB_PASSWORD"),
+		os.Getenv("DB_HOST"),
+		os.Getenv("DB_PORT"),
+		os.Getenv("DB"),
+	)
+	dbConn, err := pgx.Connect(context.Background(), dbUrl)
+	if err != nil {
+		log.Printf("Error: unable to connect to db: %s\n", err)
+		return
+	}
+
+	authConfig = &oauth2.Config{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("REDIRECT_URL"),
+		Scopes:       []string{"openid", "profile", "email"},
+		Endpoint:     google.Endpoint,
+	}
+
+	http.HandleFunc("/auth", authHandler)
+	http.HandleFunc("/callback", callbackHandler(dbConn))
+	http.HandleFunc("/logout", authLogoutHandler(dbConn))
 
 	game := GameLoop{
 		joinChan:    make(chan JoinMessage),

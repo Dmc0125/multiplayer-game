@@ -1,14 +1,73 @@
 ---
 import Layout from "./../Layout.astro"
+import { AUTH_URL } from "astro:env/server"
+
+import { db } from "../db"
+
+export const prerender = false
+
+let loggedIn = false
+let name = ""
+let avatarUrl = ""
+
+if (Astro.cookies.has("session_id")) {
+    const cookie = Astro.cookies.get("session_id")
+    const sessionId = cookie?.value
+
+    if (sessionId) {
+        const sessions = await db`
+            select u.google_name, u.google_avatar_url 
+            from sessions s 
+            join users u on u.id = s.user_id
+            where s.id = ${sessionId}
+        `.values()
+        if (sessions.length > 0) {
+            loggedIn = true
+            const session = sessions[0] as [string, string]
+            name = session[0]
+            avatarUrl = session[1]
+        }
+    }
+}
 ---
 
 <Layout>
     <div class="pt-[10%] flex flex-col items-center justify-center">
-        <h1 class="text-dark text-4xl font-bold">Paddle royale</h1>
+        <h1 class="text-dark text-2xl sm:text-4xl font-bold">Paddle royale</h1>
+        {
+            loggedIn ? (
+                <>
+                    <div class="mt-10 flex items-center justify-center gap-4">
+                        <img class="w-6 h-6 rounded-full" src={avatarUrl} alt="avatar" />
+                        <h2 class="text-dark">{name}</h2>
+                    </div>
+                </>
+            ) : (
+                <>
+                    <a
+                        class="btn w-80 mt-8 flex items-center justify-center"
+                        href={`${AUTH_URL}/auth`}
+                    >
+                        Login
+                    </a>
+                    <p class="text-dark mt-8 text-sm font-light">Or play as a guest</p>
+                </>
+            )
+        }
         <a class="btn w-80 mt-8 flex items-center justify-center" href="/singleplayer">
             Singleplayer
         </a>
-        <a class="btn w-80 mt-6 flex items-center justify-center" href="/multiplayer">Multiplayer</a
+        <a class="btn w-80 mt-8 flex items-center justify-center" href="/multiplayer">Multiplayer</a
         >
+        {
+            loggedIn && (
+                <a
+                    class="btn w-80 mt-8 flex items-center justify-center"
+                    href={`${AUTH_URL}/logout`}
+                >
+                    Logout
+                </a>
+            )
+        }
     </div>
 </Layout>
