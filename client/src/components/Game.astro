@@ -10,17 +10,24 @@
         <div class="absolute inset-0 flex items-center justify-center">
             <p id="msg-connecting" class="text-white">Connecting</p>
             <p id="msg-waiting" class="text-white hidden">Waiting for other player</p>
+            <div id="msg-game-start" class="hidden">
+                <button id="btn-game-start" disabled class="btn">Start</button>
+            </div>
+            <div id="msg-game-end" class="hidden flex flex-col gap-4 items-center justify-center">
+                <p id="msg-game-end-text" class="text-light"></p>
+                <button id="btn-play-again" disabled class="btn">Play again (r)</button>
+            </div>
         </div>
 
-        <div
-            id="message-game-end"
-            class="hidden absolute inset-0 flex flex-col gap-4 items-center justify-center z-1"
-        >
-            <p class="text-light text-sm sm:text-lg">
-                Player <span id="player-number"></span> scores
-            </p>
-            <button id="btn-play-again" class="btn">Play again (r)</button>
-        </div>
+        <!-- <div -->
+        <!--     id="message-game-end" -->
+        <!--     class="hidden absolute inset-0 flex flex-col gap-4 items-center justify-center z-1" -->
+        <!-- > -->
+        <!--     <p class="text-light text-sm sm:text-lg"> -->
+        <!--         Player <span id="player-number"></span> scores -->
+        <!--     </p> -->
+        <!--     <button id="btn-play-again" class="btn">Play again (r)</button> -->
+        <!-- </div> -->
     </div>
 
     <!-- arrows icons -->

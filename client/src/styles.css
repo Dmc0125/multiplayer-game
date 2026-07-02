@@ -46,17 +46,17 @@ button {
         bg-dark;
 }
 
-.canvas-wrapper::after {
-    content: "";
-    @apply absolute
-        inset-0
-        pointer-events-none
-        opacity-20;
-    background: repeating-linear-gradient(
-        to bottom,
-        transparent,
-        transparent 2px,
-        #000 2px,
-        #000 4px
-    );
-}
+/* .canvas-wrapper::after { */
+/*     content: ""; */
+/*     @apply absolute */
+/*         inset-0 */
+/*         pointer-events-none */
+/*         opacity-20; */
+/*     background: repeating-linear-gradient( */
+/*         to bottom, */
+/*         transparent, */
+/*         transparent 2px, */
+/*         #000 2px, */
+/*         #000 4px */
+/*     ); */
+/* } */
