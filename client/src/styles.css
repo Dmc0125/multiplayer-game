@@ -4,6 +4,8 @@
     --color-orange: #dd6e42;
     --color-yellow: #e8dab2;
     --color-dark: #353535;
+    --color-dark-2: #666666;
+    --color-dark-3: #1f1f1f;
     --color-light: #eaeaea;
 }
 
@@ -40,9 +42,8 @@ button {
 }
 
 .canvas-wrapper {
-    @apply border-4
+    @apply border-3
         border-orange
-        shadow-[0_0_30px_theme(colors.orange/50%),0_0_60px_theme(colors.orange/20%)]
         bg-dark;
 }
 

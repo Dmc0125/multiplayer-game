@@ -225,6 +225,7 @@ const (
 	MessageTypeStarted
 	MessageTypeGameState
 	MessageTypeGameEnd
+	MessageTypeReady
 
 	// client -> server
 	__MessageTypeClientToServer
@@ -304,6 +305,16 @@ func (gl *GameLobby) broadcast(msgType MessageType, data []byte) {
 func (gl *GameLobby) start() {
 	startTime := time.Now()
 
+	lobbyReady := func() (ready bool) {
+		ready = true
+		for _, p := range gl.game.players {
+			if p.conn != nil {
+				ready = ready && p.ready
+			}
+		}
+		return
+	}
+
 	for {
 		select {
 		case <-gl.stopChan:
@@ -332,7 +343,14 @@ func (gl *GameLobby) start() {
 				gl.game.players[lm.connId].keys[keyCode] = pressed
 			case MessageTypeStart:
 				if gl.game.status == GameStatusEnded || gl.game.status == GameStatusNone {
-					// TODO: both players ready
+					gl.game.players[lm.connId].ready = true
+
+					d := []byte{}
+					d = binary.LittleEndian.AppendUint32(d, uint32(lm.connId))
+					gl.broadcast(MessageTypeReady, d)
+				}
+
+				if lobbyReady() {
 					gl.game.start()
 					gl.broadcast(MessageTypeStarted, gl.game.encode())
 				}
@@ -413,7 +431,7 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 
 				d := []byte{byte(MessageTypeJoined)}
 				d = binary.LittleEndian.AppendUint32(d, uint32(connId))
-				d = append(d, uint8(0))
+				d = append(d, 0, 0)
 				if err := conn.Write(r.Context(), websocket.MessageBinary, d); err != nil {
 					log.Printf("Error: unable to send message: %s", err)
 					return
@@ -422,14 +440,71 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 				go lobby.start()
 			}
 		} else {
-			for idx, lobby := range lobbies {
+			// find lobby with single player
+			for lIdx, l := range lobbies {
+				if l != nil && !l.singleplayer && len(l.game.players) == 1 {
+					lobby = l
+					lobbyIdx = lIdx
 
+					lobby.game.addPlayer(connId, conn)
+					go lobby.start()
+
+					break
+				}
+			}
+
+			// create new lobby
+			if lobby == nil {
+				for lIdx, l := range lobbies {
+					if l == nil {
+						lobby = NewMultiplayerGameLobby()
+						lobbyIdx = lIdx
+						lobby.game.addPlayer(connId, conn)
+						lobbies[lIdx] = lobby
+						break
+					}
+				}
+			}
+
+			if lobby == nil {
+				if err := conn.Write(r.Context(), websocket.MessageBinary, []byte{byte(MessageTypeFull)}); err != nil {
+					log.Printf("Error: unable to send message: %s", err)
+					return
+				}
+			} else {
+				p := lobby.game.players[connId]
+
+				d := []byte{byte(MessageTypeJoined)}
+				d = binary.LittleEndian.AppendUint32(d, uint32(connId))
+				if p.left {
+					d = append(d, 0)
+				} else {
+					d = append(d, 1)
+				}
+
+				for pcid, _p := range lobby.game.players {
+					if _p.conn != nil {
+						var pd []byte
+						if pcid == connId {
+							pd = append(d, 1)
+						} else {
+							pd = append(d, 0)
+						}
+						_p.conn.Write(r.Context(), websocket.MessageBinary, pd)
+					}
+				}
 			}
 		}
 
 		defer func() {
 			if lobby.singleplayer {
 				lobby.stopChan <- struct{}{}
+				lobbies[lobbyIdx] = nil
+			} else {
+				// depends on count of players
+				if len(lobby.game.players) == 2 {
+					lobby.stopChan <- struct{}{}
+				}
 				lobbies[lobbyIdx] = nil
 			}
 		}()

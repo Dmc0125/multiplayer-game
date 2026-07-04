@@ -36,6 +36,9 @@ type GamePlayerState struct {
 	keys   map[KeyCode]bool
 	left   bool
 	paddle *GamePaddle
+
+	ready bool
+	pause bool
 }
 
 type GameStatus uint8
@@ -107,6 +110,8 @@ func (gs *GameState) start() {
 			p.paddle.x = PADDLE_RIGHT_X
 		}
 		p.paddle.y = GAME_HEIGHT/2 - PADDLE_HEIGHT/2
+
+		p.ready = false
 	}
 
 	// ball
