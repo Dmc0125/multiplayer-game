@@ -220,12 +220,14 @@ type MessageType uint8
 
 const (
 	// server -> client
-	MessageTypeJoined MessageType = iota
+	MessageTypePlayerJoined MessageType = iota
 	MessageTypeFull
 	MessageTypeStarted
 	MessageTypeGameState
 	MessageTypeGameEnd
 	MessageTypeReady
+	// {newPlayerConnId, otherPlayerConnId}
+	MessageTypeLobbyState
 
 	// client -> server
 	__MessageTypeClientToServer
@@ -429,9 +431,14 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 				lobbyIdx = freeIdx
 				lobbies[freeIdx] = lobby
 
-				d := []byte{byte(MessageTypeJoined)}
+				// send lobby state
+				d := []byte{byte(MessageTypeLobbyState)}
 				d = binary.LittleEndian.AppendUint32(d, uint32(connId))
-				d = append(d, 0, 0)
+				for pcid, p := range lobby.game.players {
+					if p.conn == nil {
+						d = binary.LittleEndian.AppendUint32(d, uint32(pcid))
+					}
+				}
 				if err := conn.Write(r.Context(), websocket.MessageBinary, d); err != nil {
 					log.Printf("Error: unable to send message: %s", err)
 					return
@@ -472,25 +479,34 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 					return
 				}
 			} else {
-				p := lobby.game.players[connId]
+				// joined the lobby
 
-				d := []byte{byte(MessageTypeJoined)}
-				d = binary.LittleEndian.AppendUint32(d, uint32(connId))
-				if p.left {
-					d = append(d, 0)
-				} else {
-					d = append(d, 1)
+				{ // send lobby state to new player
+					d := []byte{byte(MessageTypeLobbyState)}
+					d = binary.LittleEndian.AppendUint32(d, uint32(connId))
+
+					for pcid := range lobby.game.players {
+						if pcid != connId {
+							d = binary.LittleEndian.AppendUint32(d, uint32(pcid))
+						}
+					}
+
+					if err := conn.Write(r.Context(), websocket.MessageBinary, d); err != nil {
+						log.Printf("Error: unable to send message: %s", err)
+						return
+					}
 				}
 
-				for pcid, _p := range lobby.game.players {
-					if _p.conn != nil {
-						var pd []byte
-						if pcid == connId {
-							pd = append(d, 1)
-						} else {
-							pd = append(d, 0)
+				{ // send player joind message
+					for pcid, p := range lobby.game.players {
+						if pcid != connId {
+							d := []byte{byte(MessageTypePlayerJoined)}
+							d = binary.LittleEndian.AppendUint32(d, uint32(connId))
+							if err := p.conn.Write(r.Context(), websocket.MessageBinary, d); err != nil {
+								log.Printf("Error: unable to send message: %s", err)
+								return
+							}
 						}
-						_p.conn.Write(r.Context(), websocket.MessageBinary, pd)
 					}
 				}
 			}

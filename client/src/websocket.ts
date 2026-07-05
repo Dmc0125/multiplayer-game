@@ -4,6 +4,7 @@ const MESSAGE_TYPE_STARTED = 2
 const MESSAGE_TYPE_GAME_STATE = 3
 const MESSAGE_TYPE_GAME_END = 4
 const MESSAGE_TYPE_READY = 5
+const MESSAGE_TYPE_LOBBY_STATE = 6
 
 const MESSAGE_TYPE_KEY = 100
 const MESSAGE_TYPE_START = 101
@@ -23,30 +24,38 @@ function encodeKeyMsg(keyCode: number, down: boolean): Uint8Array<ArrayBuffer> {
     return data
 }
 
-type Paddle = {
+export type Paddle = {
     connId: number
     y: number
 }
 
-export function connectToGameServer(
-    singleplayer: boolean,
+export type Connection = {
+    sendStartMessage: () => void
+    close: () => void
+    onMessageLobbyState?: (myConnId: number, otherConnId: number | undefined) => void
+    onMessageJoined?: (connId: number) => void
+    onMessageStarted?: () => void
+    onMessageReady?: (connId: number) => void
+    onMessageGameState?: (paddles: Paddle[], ballX: number, ballY: number) => void
+    onMessageGameEnd?: (winner: number) => void
+}
 
-    btnGameStart: HTMLButtonElement,
-    btnPlayAgain: HTMLButtonElement,
+export function connectToGameServer(singleplayer: boolean) {
+    const connection = {} as Connection
 
-    //
-    onMessageJoined: (connId: number, connOrder: number, me: boolean) => void,
-    onMessageStarted: () => void,
-    onMessageReady: (connId: number) => void,
-    onMessageGameState: (paddles: Paddle[], ballX: number, ballY: number) => void,
-    onMessageGameEnd: (winner: number) => void,
-) {
     const ws = new WebSocket(`ws://localhost:8080/game?${singleplayer ? "singleplayer=1" : ""}`)
     ws.binaryType = "arraybuffer"
 
-    function sendStartMessage() {
-        ws.send(new Uint8Array([MESSAGE_TYPE_START]))
+    connection.close = () => {
+        ws.close()
     }
+
+    function sendStartMessage() {
+        if (ws.readyState === ws.OPEN) {
+            ws.send(new Uint8Array([MESSAGE_TYPE_START]))
+        }
+    }
+    connection.sendStartMessage = sendStartMessage
 
     function windowKeyDown(event: KeyboardEvent) {
         const keyCode = keyCodeMap[event.key]
@@ -63,15 +72,11 @@ export function connectToGameServer(
     }
 
     ws.onopen = function () {
-        btnGameStart.addEventListener("click", sendStartMessage)
-        btnPlayAgain.addEventListener("click", sendStartMessage)
         window.addEventListener("keydown", windowKeyDown)
         window.addEventListener("keyup", windowKeyUp)
     }
 
     ws.onclose = function () {
-        btnGameStart.removeEventListener("click", sendStartMessage)
-        btnPlayAgain.removeEventListener("click", sendStartMessage)
         window.removeEventListener("keydown", windowKeyDown)
         window.removeEventListener("keyup", windowKeyUp)
     }
@@ -86,15 +91,22 @@ export function connectToGameServer(
         const messageType = view.getUint8(0)
 
         switch (messageType) {
+            case MESSAGE_TYPE_LOBBY_STATE: {
+                const myConnId = view.getUint32(1, true)
+                let otherConnId: number | undefined
+                if (view.byteLength > 5) {
+                    otherConnId = view.getUint32(5, true)
+                }
+                connection.onMessageLobbyState?.(myConnId, otherConnId)
+                break
+            }
             case MESSAGE_TYPE_JOINED: {
                 const connId = view.getUint32(1, true)
-                const connOrder = view.getUint8(5)
-                const me = view.getUint8(6) == 1
-                onMessageJoined(connId, connOrder, me)
+                connection.onMessageJoined?.(connId)
                 break
             }
             case MESSAGE_TYPE_STARTED: {
-                onMessageStarted()
+                connection.onMessageStarted?.()
             }
             case MESSAGE_TYPE_GAME_STATE: {
                 const view = new DataView(data)
@@ -121,21 +133,23 @@ export function connectToGameServer(
                 const ballX = decodef32()
                 const ballY = decodef32()
 
-                onMessageGameState(paddles, ballX, ballY)
+                connection.onMessageGameState?.(paddles, ballX, ballY)
                 break
             }
             case MESSAGE_TYPE_GAME_END: {
                 const view = new DataView(data)
                 const winner = view.getUint32(1, true)
-                onMessageGameEnd(winner)
+                connection.onMessageGameEnd?.(winner)
                 break
             }
             case MESSAGE_TYPE_READY: {
                 const view = new DataView(data)
                 const connId = view.getUint32(1, true)
-                onMessageReady(connId)
+                connection.onMessageReady?.(connId)
                 break
             }
         }
     }
+
+    return connection
 }
