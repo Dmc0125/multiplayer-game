@@ -3,10 +3,11 @@
 @theme {
     --color-orange: #dd6e42;
     --color-yellow: #e8dab2;
-    --color-dark: #353535;
-    --color-dark-2: #666666;
+    --color-dark-1: #666666;
+    --color-dark-2: #353535;
     --color-dark-3: #1f1f1f;
-    --color-light: #eaeaea;
+    --color-light-1: #eaeaea;
+    --color-light-2: #a3a3a3;
 }
 
 @font-face {
@@ -24,40 +25,45 @@ button {
 
 .btn {
     @apply px-4 py-2 sm:px-8 sm:py-3 
-        bg-light border-2 sm:border-4 border-orange 
+        bg-light-1 border-2 sm:border-4 border-orange 
         text-orange text-sm sm:text-base
         tracking-widest uppercase
         transition-all duration-150 ease-in-out
         shadow-[0_0_12px_theme(colors.orange/40%)]
-        hover:bg-orange hover:text-dark hover:shadow-[0_0_24px_theme(colors.orange/70%)]
+        hover:bg-orange hover:text-dark-2 hover:shadow-[0_0_24px_theme(colors.orange/70%)]
         active:translate-y-0.5 active:shadow-[0_0_6px_theme(colors.orange/40%)]
         disabled:pointer-events-none
-        disabled:border-dark
-        disabled:text-dark
+        disabled:border-dark-1
+        disabled:text-dark-3
         disabled:shadow-none
         disabled:hover:bg-transparent
-        disabled:hover:text-dark
+        disabled:hover:text-dark-3
         disabled:hover:shadow-none
         disabled:active:translate-y-0;
 }
 
-.canvas-wrapper {
-    @apply border-3
-        border-orange
-        bg-dark;
+.arcade-grid {
+    background-color: var(--color-dark-3);
+    background-image:
+        linear-gradient(rgba(221, 110, 66, 0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(221, 110, 66, 0.06) 1px, transparent 1px);
+    background-size: 32px 32px;
 }
 
-/* .canvas-wrapper::after { */
-/*     content: ""; */
-/*     @apply absolute */
-/*         inset-0 */
-/*         pointer-events-none */
-/*         opacity-20; */
-/*     background: repeating-linear-gradient( */
-/*         to bottom, */
-/*         transparent, */
-/*         transparent 2px, */
-/*         #000 2px, */
-/*         #000 4px */
-/*     ); */
-/* } */
+.crt-scanlines {
+    position: relative;
+}
+
+.crt-scanlines::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0) 0px,
+        rgba(0, 0, 0, 0) 2px,
+        rgba(0, 0, 0, 0.18) 3px,
+        rgba(0, 0, 0, 0.18) 4px
+    );
+}

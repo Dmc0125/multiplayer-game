@@ -33,13 +33,13 @@ if (Astro.cookies.has("session_id")) {
 
 <Layout>
     <div class="pt-[10%] flex flex-col items-center justify-center">
-        <h1 class="text-dark text-2xl sm:text-4xl font-bold">Paddle royale</h1>
+        <h1 class="text-light-1 text-2xl sm:text-4xl font-bold">Paddle royale</h1>
         {
             loggedIn ? (
                 <>
                     <div class="mt-10 flex items-center justify-center gap-4">
                         <img class="w-6 h-6 rounded-full" src={avatarUrl} alt="avatar" />
-                        <h2 class="text-dark">{name}</h2>
+                        <h2 class="text-light-2">{name}</h2>
                     </div>
                 </>
             ) : (
@@ -50,7 +50,7 @@ if (Astro.cookies.has("session_id")) {
                     >
                         Login
                     </a>
-                    <p class="text-dark mt-8 text-sm font-light">Or play as a guest</p>
+                    <p class="text-light-2 mt-8 text-sm font-light">Or play as a guest</p>
                 </>
             )
         }

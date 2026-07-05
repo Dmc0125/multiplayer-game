@@ -101,7 +101,7 @@ function MenuScreen({ status, winner, players, onStart, onPlayAgain }: MenuScree
 
             return (
                 <div className="flex flex-col gap-4 items-center justify-center">
-                    <p className="text-light">{text}</p>
+                    <p className="text-light-2">{text}</p>
                     <button
                         className="btn"
                         onClick={() => {
@@ -127,27 +127,35 @@ type Player = {
 type PlayerScoreProps = {
     connId: number | undefined
     players: Record<number, Player>
+    singleplayer: boolean
+    left: boolean
 }
 
-function PlayerScore({ connId, players }: PlayerScoreProps) {
-    if (connId === undefined) {
-        return (
-            <div className="w-[40%] p-4 bg-dark flex flex-col border-3 border-dark-2 pointer-events-none">
-                <p className="text-xs text-light opacity-0">Player 1</p>
-                <p className="mt-2 text-lg font-medium opacity-0">0</p>
-                <p className="text-xs text-light opacity-0">Ready</p>
-            </div>
-        )
+function PlayerScore({ singleplayer, connId, players, left }: PlayerScoreProps) {
+    let hideCn = connId === undefined ? "opacity-0" : ""
+    let me = false
+    let score = 0
+    let ready = false
+
+    if (connId !== undefined) {
+        ;({ me, score, ready } = players[connId])
     }
 
-    const { me, score, ready } = players[connId]
     return (
-        <div className="w-[40%] p-4 bg-dark flex flex-col border-3 border-dark-2">
-            <p className="text-xs text-light">Player 1</p>
-            <p className={`mt-2 text-lg font-medium ${me ? "text-yellow" : "text-orange"}`}>
+        <div
+            className={`w-[40%] p-4 bg-dark-3 flex flex-col border-3 border-dark-2 ${left ? "" : "text-right"}`}
+        >
+            <p className={`text-xs text-light-2 uppercase ${hideCn}`}>{me ? "You" : "Enemy"}</p>
+            <p
+                className={`mt-3 text-4xl font-medium ${me ? "text-yellow" : "text-orange"} ${hideCn}`}
+            >
                 {score}
             </p>
-            <p className={`text-xs ${ready ? "text-green-500" : "text-light"}`}>Ready</p>
+            {!singleplayer && (
+                <p className={`mt-2 text-xs ${ready ? "text-green-700" : "text-dark-1"} ${hideCn}`}>
+                    Ready
+                </p>
+            )}
         </div>
     )
 }
@@ -303,12 +311,25 @@ export function Game({ singleplayer }: GameProps) {
     return (
         <div className="w-full max-w-[800px] mt-10">
             <div className="w-full max-w-[800px] flex items-center justify-between">
-                <PlayerScore connId={playersPositions.left} players={players} />
-                <PlayerScore connId={playersPositions.right} players={players} />
+                <PlayerScore
+                    connId={playersPositions.left}
+                    players={players}
+                    singleplayer={singleplayer}
+                    left={true}
+                />
+                <PlayerScore
+                    connId={playersPositions.right}
+                    players={players}
+                    singleplayer={singleplayer}
+                    left={false}
+                />
             </div>
 
             <div className="relative w-full max-w-[800px] mt-6 aspect-[2/1] mx-auto canvas-wrapper">
-                <canvas ref={canvasElement} id="canvas" className="w-full aspect-[2/1]"></canvas>
+                <canvas
+                    ref={canvasElement}
+                    className="w-full aspect-[2/1] border-3 border-orange bg-dark-3 crt-scanlines"
+                ></canvas>
                 <div className="absolute inset-0 flex items-center justify-center">
                     <MenuScreen
                         status={status}
@@ -322,20 +343,20 @@ export function Game({ singleplayer }: GameProps) {
 
             <div className="flex gap-8 items-center w-fit mx-auto mt-6">
                 <div className="flex flex-col items-center gap-2">
-                    <div className="bg-dark w-fit p-2 rounded">
-                        <svg className="size-4 text-light">
+                    <div className="bg-dark-2 w-fit p-2 rounded">
+                        <svg className="size-4 text-light-2">
                             <use href="/icons.svg#arrow-up"></use>
                         </svg>
                     </div>
-                    <p className="text-xs">up</p>
+                    <p className="text-xs text-light-2">up</p>
                 </div>
                 <div className="flex flex-col items-center gap-2">
-                    <div className="bg-dark w-fit p-2 rounded">
-                        <svg className="size-4 text-light rotate-180">
+                    <div className="bg-dark-2 w-fit p-2 rounded">
+                        <svg className="size-4 text-light-2 rotate-180">
                             <use href="/icons.svg#arrow-up"></use>
                         </svg>
                     </div>
-                    <p className="text-xs">down</p>
+                    <p className="text-xs text-light-2">down</p>
                 </div>
             </div>
         </div>
