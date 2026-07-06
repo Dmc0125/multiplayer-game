@@ -195,10 +195,6 @@ export function Game({ singleplayer }: GameProps) {
     const [saved, setSaved] = useState<boolean>(false)
 
     useEffect(() => {
-        setSaved(false)
-    }, [status])
-
-    useEffect(() => {
         const canvas = canvasElement.current!
         const ctx = canvas.getContext("2d")!
 
@@ -294,6 +290,7 @@ export function Game({ singleplayer }: GameProps) {
 
         connection.current.onMessageGameEnd = function (winner: number) {
             setStatus("game-end")
+            setSaved(false)
             setWinner(winner)
             setPlayers((prev) => {
                 prev[winner].score += 1
@@ -364,14 +361,14 @@ export function Game({ singleplayer }: GameProps) {
             }
         }
 
-        if (status === "game-start" || status === "game-end") {
+        if (status === "game-start" || (status === "game-end" && saved)) {
             window.addEventListener("keydown", s)
         }
 
         return () => {
             window.removeEventListener("keydown", s)
         }
-    }, [status])
+    }, [status, saved])
 
     return (
         <div className="w-full max-w-[800px] mt-10">

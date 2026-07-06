@@ -1,14 +1,18 @@
 ---
-import Layout from "./../Layout.astro"
 import { AUTH_URL } from "astro:env/server"
 
 import { db } from "../db"
+import Layout from "./../Layout.astro"
+import UserInfo from "../components/UserInfo.astro"
 
 export const prerender = false
 
 let loggedIn = false
 let name = ""
-let avatarUrl = "https://api.dicebear.com/10.x/thumbs/svg?seed="
+let wins = 0,
+    losses = 0,
+    spWins = 0,
+    spLosses = 0
 
 if (Astro.cookies.has("session_id")) {
     const cookie = Astro.cookies.get("session_id")
@@ -16,15 +20,19 @@ if (Astro.cookies.has("session_id")) {
 
     if (sessionId) {
         const sessions = await db`
-            select u.username 
+            select u.username, st.wins, st.losses, st.sp_wins, st.sp_losses
             from sessions s 
-            join users u on u.id = s.user_id
-            where s.id = ${sessionId} and s.expires_at > now()
+            join 
+                users u on u.id = s.user_id
+            join 
+                stats st on st.user_id = u.id
+            where 
+                s.id = ${sessionId} and s.expires_at > now()
         `.values()
         if (sessions.length > 0) {
             loggedIn = true
-            const session = sessions[0] as [string, string]
-            name = session[0]
+            const session = sessions[0] as [string, number, number, number, number]
+            ;[name, wins, losses, spWins, spLosses] = session
         }
     }
 }
@@ -35,16 +43,13 @@ if (Astro.cookies.has("session_id")) {
         <h1 class="text-light-1 text-2xl sm:text-4xl font-bold">Paddle royale</h1>
         {
             loggedIn ? (
-                <>
-                    <div class="mt-10 flex items-center justify-center gap-4">
-                        <img
-                            class="w-6 h-6 rounded-full"
-                            src={`${avatarUrl}${name}`}
-                            alt="avatar"
-                        />
-                        <h2 class="text-light-2">{name}</h2>
-                    </div>
-                </>
+                <UserInfo
+                    name={name}
+                    wins={wins}
+                    losses={losses}
+                    spWins={spWins}
+                    spLosses={spLosses}
+                />
             ) : (
                 <>
                     <a

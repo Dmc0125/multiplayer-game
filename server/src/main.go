@@ -483,11 +483,14 @@ func (gl *GameLobby) start(dbConn *pgx.Conn) {
 			if gl.game.status == GameStatusPlaying {
 				winner, winnerConnId := gl.game.update()
 				if winner {
+					slog.Info("game ended", "lobby_idx", gl.index, "winner_conn_id", winnerConnId)
+
 					d := []byte{}
 					d = binary.LittleEndian.AppendUint32(d, uint32(winnerConnId))
 					gl.broadcast(MessageTypeGameEnd, d)
 
 					// update db stats
+					slog.Info("updating db stats", "lobby_idx", gl.index)
 
 					batch := pgx.Batch{}
 					col := func(c string) string {
@@ -516,10 +519,13 @@ func (gl *GameLobby) start(dbConn *pgx.Conn) {
 						br := dbConn.SendBatch(context.Background(), &batch)
 						if _, err := br.Exec(); err != nil {
 							slog.Error("unable to update stats", "lobby_idx", gl.index, "error", err)
+						} else {
+							slog.Info("updated stats", "lobby_idx", gl.index)
 						}
 						br.Close()
 					}
 
+					slog.Info("broadcasting saved", "lobby_idx", gl.index)
 					gl.broadcast(MessageTypeSaved, nil)
 				} else {
 					gl.broadcast(MessageTypeGameState, gl.game.encode())
