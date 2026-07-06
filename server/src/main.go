@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	crypto "crypto/rand"
 	"encoding/binary"
@@ -8,7 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -21,6 +23,60 @@ import (
 )
 
 const PORT = ":8080"
+
+type logResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *logResponseWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *logResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.ResponseWriter.(http.Hijacker).Hijack()
+}
+
+var _ http.Hijacker = (*logResponseWriter)(nil)
+
+func logRequest(next http.Handler) http.Handler {
+	requestId := func() string {
+		d := make([]byte, 8)
+		crypto.Read(d)
+		return hex.EncodeToString(d)
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// log method, path, status, and duration
+		rw := &logResponseWriter{w, http.StatusOK}
+		start := time.Now()
+
+		rid := requestId()
+		w.Header().Set("X-Request-Id", rid)
+		ctx := context.WithValue(r.Context(), "requestId", rid)
+
+		slog.Info(
+			"request incoming",
+			"request_id", rid,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"remote_addr", r.RemoteAddr,
+			"user_agent", r.UserAgent(),
+		)
+		next.ServeHTTP(rw, r.WithContext(ctx))
+		slog.Info(
+			"request complete",
+			"request_id", rid,
+			"status", rw.status,
+			"duration", time.Since(start),
+		)
+	})
+}
+
+func getRequestId(r *http.Request) string {
+	return r.Context().Value("requestId").(string)
+}
 
 func getUserIdFromSession(dbConn *pgx.Conn, r *http.Request) (userId int, status int) {
 	sessionId, _ := r.Cookie("session_id")
@@ -37,11 +93,23 @@ func getUserIdFromSession(dbConn *pgx.Conn, r *http.Request) (userId int, status
 	if errors.Is(err, pgx.ErrNoRows) {
 		status = http.StatusUnauthorized
 	} else if err != nil {
-		log.Printf("Error: unable to get session: %s", err)
+		logReqError(r, "unable to get session", "error", err)
 		status = http.StatusInternalServerError
 	}
 
 	return
+}
+
+func logReqInfo(r *http.Request, msg string, args ...any) {
+	a := []any{"request_id", getRequestId(r), "path", r.URL.Path}
+	a = append(a, args...)
+	slog.Info(msg, a...)
+}
+
+func logReqError(r *http.Request, msg string, args ...any) {
+	a := []any{"request_id", getRequestId(r), "path", r.URL.Path}
+	a = append(a, args...)
+	slog.Error(msg, a...)
 }
 
 // auth
@@ -53,10 +121,13 @@ func authHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 		_, status := getUserIdFromSession(dbConn, r)
 		switch status {
 		case http.StatusOK:
+			logReqInfo(r, "user already logged in")
 			http.Redirect(w, r, os.Getenv("CLIENT_REDIRECT_URL"), http.StatusSeeOther)
 		case http.StatusInternalServerError:
+			logReqInfo(r, "unable to get user id", "error", status)
 			http.Error(w, "Error: unable to get user id", status)
 		default:
+			logReqInfo(r, "redirecting to auth")
 			state := os.Getenv("OAUTH_STATE")
 			url := authConfig.AuthCodeURL(state)
 			http.Redirect(http.ResponseWriter(w), r, url, http.StatusFound)
@@ -68,22 +139,26 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 	return func(w http.ResponseWriter, r *http.Request) {
 		state := r.URL.Query().Get("state")
 		if state != os.Getenv("OAUTH_STATE") {
+			logReqInfo(r, "invalid state", "state", state)
 			http.Error(w, "Error: invalid state", http.StatusBadRequest)
 			return
 		}
 
+		logReqInfo(r, "token exchange")
 		code := r.URL.Query().Get("code")
 		token, err := authConfig.Exchange(context.Background(), code)
 		if err != nil {
-			log.Printf("Error: unable to exchange code for token: %s", err)
+			logReqError(r, "unable to exchange code for token", "error", err)
 			http.Error(w, "Error: unable to exchange code for token", http.StatusInternalServerError)
 			return
 		}
+		logReqInfo(r, "token exchange complete")
 
+		logReqInfo(r, "getting user info")
 		client := authConfig.Client(r.Context(), token)
 		resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
 		if err != nil {
-			log.Printf("Error: unable to get user info: %s", err)
+			logReqError(r, "unable to get user info", "error", err)
 			http.Error(w, "Error: unable to get user info", http.StatusInternalServerError)
 			return
 		}
@@ -95,14 +170,16 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 			Picture string `json:"picture"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-			log.Printf("Error: unable to decode user info: %s", err)
+			logReqError(r, "unable to decode user info", "error", err)
 			http.Error(w, "Error: unable to decode user info", http.StatusInternalServerError)
 			return
 		}
+		logReqInfo(r, "getting user info complete")
 
+		logReqInfo(r, "inserting user")
 		dbtx, err := dbConn.Begin(r.Context())
 		if err != nil {
-			log.Printf("Error: unable to start transaction: %s", err)
+			logReqError(r, "unable to start transaction", "error", err)
 			http.Error(w, "Error: unable to start transaction", http.StatusInternalServerError)
 			return
 		}
@@ -124,9 +201,11 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 
 		if err := insertedUser.Scan(&userId); errors.Is(err, pgx.ErrNoRows) {
 			// already exists
+			logReqInfo(r, "existing user", "user_id", userId)
+
 			user := dbtx.QueryRow(r.Context(), "select id from users where google_email = $1", userInfo.Email)
 			if err := user.Scan(&userId); err != nil {
-				log.Printf("Error: unable to get user: %s", err)
+				logReqError(r, "unable to get user", "error", err)
 				http.Error(w, "Error: unable to get user", http.StatusInternalServerError)
 				return
 			}
@@ -138,32 +217,36 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 			)
 			err := session.Scan(&sessionId)
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				log.Printf("Error: unable to get session: %s", err)
+				logReqError(r, "unable to get session", "error", err)
 				http.Error(w, "Error: unable to get session", http.StatusInternalServerError)
 				return
 			}
 		} else if err != nil {
-			log.Printf("Error: unable to insert user: %s", err)
+			logReqError(r, "unable to insert user", "error", err)
 			http.Error(w, "Error: unable to insert user", http.StatusInternalServerError)
 			return
 		} else {
 			// user doesn't exist => insert stats
+			logReqInfo(r, "new user", "user_id", userId)
+
 			_, err := dbtx.Exec(
 				r.Context(),
 				"insert into stats (user_id) values ($1)",
 				userId,
 			)
 			if err != nil {
-				log.Printf("Error: unable to insert stats: %s", err)
+				logReqError(r, "unable to insert stats", "error", err)
 				http.Error(w, "Error: unable to insert stats", http.StatusInternalServerError)
 				return
 			}
 		}
 
 		if sessionId == "" {
+			logReqInfo(r, "new session", "user_id", userId)
+
 			sid := make([]byte, 32)
 			if _, err := crypto.Read(sid); err != nil {
-				log.Printf("Error: unable to generate session id: %s", err)
+				logReqError(r, "unable to generate session id", "error", err)
 				http.Error(w, "Error: unable to generate session id", http.StatusInternalServerError)
 				return
 			}
@@ -178,18 +261,23 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 				expiresAt,
 			)
 			if err != nil {
-				log.Printf("Error: unable to insert session: %s", err)
+				logReqError(r, "unable to insert session", "error", err)
 				http.Error(w, "Error: unable to insert session", http.StatusInternalServerError)
 				return
 			}
+		} else {
+			logReqInfo(r, "existing session", "user_id", userId)
 		}
 
 		if err := dbtx.Commit(r.Context()); err != nil {
-			log.Printf("Error: unable to commit transaction: %s", err)
+			logReqError(r, "unable to commit transaction", "error", err)
 			http.Error(w, "Error: unable to commit transaction", http.StatusInternalServerError)
 			return
 		}
 
+		logReqInfo(r, "user inserted")
+
+		logReqInfo(r, "setting session cookie")
 		// TODO: modify config when in prod
 		isProd := os.Getenv("ENV") == "prod"
 		http.SetCookie(w, &http.Cookie{
@@ -206,25 +294,22 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 
 func authLogoutHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sessionId, err := r.Cookie("session_id")
-		if err != nil {
-			log.Printf("Error: unable to get session id: %s", err)
-			http.Error(w, "Error: unable to get session id", http.StatusInternalServerError)
-			return
-		}
+		sessionId, _ := r.Cookie("session_id")
 		if sessionId != nil {
+			logReqInfo(r, "deleting session", "session_id", sessionId.Value)
 			_, err := dbConn.Exec(
 				r.Context(),
 				"delete from sessions where id = $1",
 				sessionId.Value,
 			)
-			if err != nil {
-				log.Printf("Error: unable to delete session: %s", err)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				logReqError(r, "unable to delete session", "error", err)
 				http.Error(w, "Error: unable to delete session", http.StatusInternalServerError)
 				return
 			}
 		}
 
+		logReqInfo(r, "deleting session cookie")
 		http.SetCookie(w, &http.Cookie{
 			Name:     "session_id",
 			Value:    "",
@@ -292,6 +377,7 @@ type LobbyMessage struct {
 }
 
 type GameLobby struct {
+	index        int
 	singleplayer bool
 	messageChan  chan LobbyMessage
 	stopChan     chan struct{}
@@ -301,8 +387,9 @@ type GameLobby struct {
 	game *GameState
 }
 
-func NewSingleplayerGameLobby(connId ConnId, conn *websocket.Conn, userId int) (gl *GameLobby) {
+func NewSingleplayerGameLobby(lobbyIdx int, connId ConnId, conn *websocket.Conn, userId int) (gl *GameLobby) {
 	gl = &GameLobby{
+		index:        lobbyIdx,
 		singleplayer: true,
 		messageChan:  make(chan LobbyMessage),
 		stopChan:     make(chan struct{}),
@@ -314,8 +401,9 @@ func NewSingleplayerGameLobby(connId ConnId, conn *websocket.Conn, userId int) (
 	return
 }
 
-func NewMultiplayerGameLobby() (gl *GameLobby) {
+func NewMultiplayerGameLobby(lobbyIdx int) (gl *GameLobby) {
 	gl = &GameLobby{
+		index:        lobbyIdx,
 		singleplayer: false,
 		messageChan:  make(chan LobbyMessage),
 		stopChan:     make(chan struct{}),
@@ -351,7 +439,7 @@ func (gl *GameLobby) start(dbConn *pgx.Conn) {
 			switch lm.msgType {
 			case MessageTypeKey:
 				if len(lm.data) < 2 {
-					log.Printf("Error: invalid message length: %d\n", len(lm.data))
+					slog.Error("invalid message length", "lobby_idx", gl.index, "conn_id", lm.connId, "length", len(lm.data))
 					continue
 				}
 
@@ -378,6 +466,7 @@ func (gl *GameLobby) start(dbConn *pgx.Conn) {
 				if ready {
 					gl.game.start()
 					gl.broadcast(MessageTypeStarted, gl.game.encode())
+					slog.Info("game started", "lobby_idx", gl.index)
 				}
 			}
 		default:
@@ -418,7 +507,7 @@ func (gl *GameLobby) start(dbConn *pgx.Conn) {
 					if batch.Len() > 0 {
 						br := dbConn.SendBatch(context.Background(), &batch)
 						if _, err := br.Exec(); err != nil {
-							log.Printf("Error: unable to update stats: %s", err)
+							slog.Error("unable to update stats", "lobby_idx", gl.index, "error", err)
 						}
 						br.Close()
 					}
@@ -458,12 +547,13 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 		}
 
 		singleplayer := r.URL.Query().Get("singleplayer") == "1"
+		logReqInfo(r, "init websocket connection", "user_id", userId, "singleplayer", singleplayer)
 
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			InsecureSkipVerify: true,
 		})
 		if err != nil {
-			log.Printf("Error: unable to accept websocket connection: %s", err)
+			logReqError(r, "unable to accept websocket connection", "error", err)
 			http.Error(w, "Error: unable to accept websocket connection", http.StatusInternalServerError)
 			return
 		}
@@ -471,6 +561,8 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 		connId := nextConnId()
 		var lobbyIdx int
 		var lobby *GameLobby
+
+		logReqInfo(r, "websocket connection accepted", "conn_id", connId, "user_id", userId)
 
 		if singleplayer {
 			freeIdx := -1
@@ -482,12 +574,13 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 			}
 
 			if freeIdx == -1 {
+				logReqInfo(r, "no free lobby found", "user_id", userId)
 				if err := conn.Write(r.Context(), websocket.MessageBinary, []byte{byte(MessageTypeFull)}); err != nil {
-					log.Printf("Error: unable to send message: %s", err)
+					logReqError(r, "unable to send message", "error", err)
 					return
 				}
 			} else {
-				lobby = NewSingleplayerGameLobby(connId, conn, userId)
+				lobby = NewSingleplayerGameLobby(freeIdx, connId, conn, userId)
 				lobbyIdx = freeIdx
 				lobbies[freeIdx] = lobby
 
@@ -500,7 +593,7 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 					}
 				}
 				if err := conn.Write(r.Context(), websocket.MessageBinary, d); err != nil {
-					log.Printf("Error: unable to send message: %s", err)
+					logReqError(r, "unable to send message", "error", err)
 					return
 				}
 
@@ -524,7 +617,7 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 			if lobby == nil {
 				for lIdx, l := range lobbies {
 					if l == nil {
-						lobby = NewMultiplayerGameLobby()
+						lobby = NewMultiplayerGameLobby(lIdx)
 						lobbyIdx = lIdx
 						lobby.game.addPlayer(connId, conn, userId)
 						lobbies[lIdx] = lobby
@@ -534,8 +627,9 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 			}
 
 			if lobby == nil {
+				logReqInfo(r, "no free lobby found", "user_id", userId)
 				if err := conn.Write(r.Context(), websocket.MessageBinary, []byte{byte(MessageTypeFull)}); err != nil {
-					log.Printf("Error: unable to send message: %s", err)
+					logReqError(r, "unable to send message", "error", err)
 					return
 				}
 			} else {
@@ -552,7 +646,7 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 					}
 
 					if err := conn.Write(r.Context(), websocket.MessageBinary, d); err != nil {
-						log.Printf("Error: unable to send message: %s", err)
+						logReqError(r, "unable to send message", "error", err)
 						return
 					}
 				}
@@ -563,7 +657,7 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 							d := []byte{byte(MessageTypePlayerJoined)}
 							d = binary.LittleEndian.AppendUint32(d, uint32(connId))
 							if err := p.conn.Write(r.Context(), websocket.MessageBinary, d); err != nil {
-								log.Printf("Error: unable to send message: %s", err)
+								logReqError(r, "unable to send message", "error", err)
 								return
 							}
 						}
@@ -572,12 +666,32 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 
+		lobbiesCount := func() (free, used int) {
+			for _, l := range lobbies {
+				if l == nil {
+					free += 1
+				} else {
+					used += 1
+				}
+			}
+			return
+		}
+
+		{
+			free, used := lobbiesCount()
+			logReqInfo(r, "started game", "user_id", userId, "lobby_idx", lobbyIdx, "free_lobbies", free, "used_lobbies", used)
+		}
+
 		defer func() {
+			args := []any{}
+
 			if lobby.singleplayer {
 				lobby.stopChan <- struct{}{}
 				lobbies[lobbyIdx] = nil
 			} else {
 				if len(lobby.game.players) == 2 {
+					args = append(args, "lobby_deleted", false)
+
 					lobby.leaveChan <- connId
 					for _, p := range lobby.game.players {
 						if p.conn != nil {
@@ -585,10 +699,23 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 						}
 					}
 				} else {
+					args = append(args, "lobby_deleted", true)
+
 					lobby.stopChan <- struct{}{}
 					lobbies[lobbyIdx] = nil
 				}
 			}
+
+			free, used := lobbiesCount()
+			args = append([]any{
+				"user_id", userId,
+				"lobby_idx", lobbyIdx,
+				"free_lobbies", free,
+				"used_lobbies", used,
+				"singleplayer", lobby.singleplayer,
+			}, args...)
+
+			slog.Info("connection closed", args...)
 		}()
 
 		for {
@@ -598,11 +725,11 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 			}
 
 			if msgType != websocket.MessageBinary {
-				log.Printf("Error: unexpected message type: %d\n", msgType)
+				logReqError(r, "unexpected message type", "type", msgType)
 				continue
 			}
 			if len(bytes) < 1 {
-				log.Printf("Error: invalid message length: %d\n", len(bytes))
+				logReqError(r, "invalid message length", "length", len(bytes))
 				continue
 			}
 
@@ -615,11 +742,15 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 }
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level:     slog.LevelDebug,
+		AddSource: true,
+	})))
 
 	if err := godotenv.Load(); err != nil {
-		log.Printf("Warn: unable to load .env: %s\n", err)
+		slog.Warn("unable to load .env", "error", err)
 	}
+	slog.Info("loaded .env")
 
 	dbUrl := fmt.Sprintf(
 		"postgresql://%s:%s@%s:%s/%s",
@@ -631,9 +762,10 @@ func main() {
 	)
 	dbConn, err := pgx.Connect(context.Background(), dbUrl)
 	if err != nil {
-		log.Printf("Error: unable to connect to db: %s\n", err)
+		slog.Error("unable to connect to db", "error", err)
 		return
 	}
+	slog.Info("connected to db")
 
 	authConfig = &oauth2.Config{
 		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
@@ -642,14 +774,18 @@ func main() {
 		Scopes:       []string{"openid", "profile", "email"},
 		Endpoint:     google.Endpoint,
 	}
+	slog.Info("loaded auth config")
 
-	http.HandleFunc("/auth", authHandler(dbConn))
-	http.HandleFunc("/callback", callbackHandler(dbConn))
-	http.HandleFunc("/logout", authLogoutHandler(dbConn))
-	http.HandleFunc("/game", gameHandler(dbConn))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth", authHandler(dbConn))
+	mux.HandleFunc("/callback", callbackHandler(dbConn))
+	mux.HandleFunc("/logout", authLogoutHandler(dbConn))
+	mux.HandleFunc("/game", gameHandler(dbConn))
 
-	log.Printf("Listening at http://localhost%s\n", PORT)
-	if err := http.ListenAndServe(PORT, nil); err != nil {
+	handler := logRequest(mux)
+
+	slog.Info("listening at http://localhost:8080")
+	if err := http.ListenAndServe(PORT, handler); err != nil {
 		fmt.Printf("Error: %s", err)
 	}
 }
