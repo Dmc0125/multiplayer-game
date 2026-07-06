@@ -73,11 +73,12 @@ type MenuScreenProps = {
     status: GameStatus
     winner: number | undefined
     players: Record<number, Player>
+    saved: boolean
     onStart: (() => void) | undefined
     onPlayAgain: (() => void) | undefined
 }
 
-function MenuScreen({ status, winner, players, onStart, onPlayAgain }: MenuScreenProps) {
+function MenuScreen({ status, winner, players, saved, onStart, onPlayAgain }: MenuScreenProps) {
     switch (status) {
         case "connecting":
             return <p className="text-white">Connecting</p>
@@ -117,6 +118,7 @@ function MenuScreen({ status, winner, players, onStart, onPlayAgain }: MenuScree
                     <p className="text-light-2">{text}</p>
                     <button
                         className="btn"
+                        disabled={!saved}
                         onClick={() => {
                             onPlayAgain?.()
                         }}
@@ -190,6 +192,11 @@ export function Game({ singleplayer }: GameProps) {
         right: undefined,
     })
     const [winner, setWinner] = useState<number | undefined>(undefined)
+    const [saved, setSaved] = useState<boolean>(false)
+
+    useEffect(() => {
+        setSaved(false)
+    }, [status])
 
     useEffect(() => {
         const canvas = canvasElement.current!
@@ -210,7 +217,10 @@ export function Game({ singleplayer }: GameProps) {
     useEffect(() => {
         connection.current = connectToGameServer(singleplayer)
 
-        function onMessageLobbyState(myConnId: number, otherConnId: number | undefined) {
+        connection.current.onMessageLobbyState = function (
+            myConnId: number,
+            otherConnId: number | undefined,
+        ) {
             setConnId(myConnId)
 
             const players: Record<number, Player> = {}
@@ -248,7 +258,7 @@ export function Game({ singleplayer }: GameProps) {
             setPlayers(players)
         }
 
-        function onMessageJoined(connId: number) {
+        connection.current.onMessageJoined = function (connId: number) {
             setPlayers((prev) => ({
                 ...prev,
                 [connId]: {
@@ -265,7 +275,7 @@ export function Game({ singleplayer }: GameProps) {
             setStatus("game-start")
         }
 
-        function onMessageStarted() {
+        connection.current.onMessageStarted = function () {
             setStatus("playing")
             setPlayers((prev) => {
                 for (const connId of Object.keys(prev)) {
@@ -275,14 +285,14 @@ export function Game({ singleplayer }: GameProps) {
             })
         }
 
-        function onMessageReady(connId: number) {
+        connection.current.onMessageReady = function (connId: number) {
             setPlayers((prev) => {
                 prev[connId].ready = true
                 return { ...prev }
             })
         }
 
-        function onMessageGameEnd(winner: number) {
+        connection.current.onMessageGameEnd = function (winner: number) {
             setStatus("game-end")
             setWinner(winner)
             setPlayers((prev) => {
@@ -291,11 +301,9 @@ export function Game({ singleplayer }: GameProps) {
             })
         }
 
-        connection.current.onMessageLobbyState = onMessageLobbyState
-        connection.current.onMessageJoined = onMessageJoined
-        connection.current.onMessageStarted = onMessageStarted
-        connection.current.onMessageReady = onMessageReady
-        connection.current.onMessageGameEnd = onMessageGameEnd
+        connection.current.onMessageSaved = function () {
+            setSaved(true)
+        }
 
         return connection.current.close
     }, [])
@@ -394,6 +402,7 @@ export function Game({ singleplayer }: GameProps) {
                         winner={winner}
                         players={players}
                         onPlayAgain={connection.current?.sendStartMessage}
+                        saved={saved}
                     />
                 </div>
             </div>

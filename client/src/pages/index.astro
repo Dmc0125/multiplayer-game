@@ -19,7 +19,7 @@ if (Astro.cookies.has("session_id")) {
             select u.google_name, u.google_avatar_url 
             from sessions s 
             join users u on u.id = s.user_id
-            where s.id = ${sessionId}
+            where s.id = ${sessionId} and s.expires_at > now()
         `.values()
         if (sessions.length > 0) {
             loggedIn = true

@@ -22,14 +22,46 @@ import (
 
 const PORT = ":8080"
 
+func getUserIdFromSession(dbConn *pgx.Conn, r *http.Request) (userId int, status int) {
+	sessionId, _ := r.Cookie("session_id")
+	if sessionId == nil {
+		status = http.StatusUnauthorized
+		return
+	}
+
+	status = http.StatusOK
+
+	q := "select u.id from sessions s join users u on u.id = s.user_id where s.id = $1 and s.expires_at > now()"
+	userId = -1
+	err := dbConn.QueryRow(r.Context(), q, sessionId.Value).Scan(&userId)
+	if errors.Is(err, pgx.ErrNoRows) {
+		status = http.StatusUnauthorized
+	} else if err != nil {
+		log.Printf("Error: unable to get session: %s", err)
+		status = http.StatusInternalServerError
+	}
+
+	return
+}
+
 // auth
 
 var authConfig *oauth2.Config
 
-func authHandler(w http.ResponseWriter, r *http.Request) {
-	state := os.Getenv("OAUTH_STATE")
-	url := authConfig.AuthCodeURL(state)
-	http.Redirect(http.ResponseWriter(w), r, url, http.StatusFound)
+func authHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, status := getUserIdFromSession(dbConn, r)
+		switch status {
+		case http.StatusOK:
+			http.Redirect(w, r, os.Getenv("CLIENT_REDIRECT_URL"), http.StatusSeeOther)
+		case http.StatusInternalServerError:
+			http.Error(w, "Error: unable to get user id", status)
+		default:
+			state := os.Getenv("OAUTH_STATE")
+			url := authConfig.AuthCodeURL(state)
+			http.Redirect(http.ResponseWriter(w), r, url, http.StatusFound)
+		}
+	}
 }
 
 func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +100,15 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		insertedUser := dbConn.QueryRow(
+		dbtx, err := dbConn.Begin(r.Context())
+		if err != nil {
+			log.Printf("Error: unable to start transaction: %s", err)
+			http.Error(w, "Error: unable to start transaction", http.StatusInternalServerError)
+			return
+		}
+		defer dbtx.Rollback(r.Context())
+
+		insertedUser := dbtx.QueryRow(
 			r.Context(),
 			`
 			insert into users (google_email, google_name, google_avatar_url) values ($1, $2, $3) 
@@ -81,27 +121,23 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 
 		var userId int
 		var sessionId string
-		insertSession := true
 
-		if err := insertedUser.Scan(&userId); err != nil && err.Error() != "pq: duplicate key value violates unique constraint \"users_google_email_key\"" {
+		if err := insertedUser.Scan(&userId); errors.Is(err, pgx.ErrNoRows) {
 			// already exists
-			user := dbConn.QueryRow(r.Context(), "select id from users where google_email = $1", userInfo.Email)
+			user := dbtx.QueryRow(r.Context(), "select id from users where google_email = $1", userInfo.Email)
 			if err := user.Scan(&userId); err != nil {
 				log.Printf("Error: unable to get user: %s", err)
 				http.Error(w, "Error: unable to get user", http.StatusInternalServerError)
 				return
 			}
 
-			session := dbConn.QueryRow(
+			session := dbtx.QueryRow(
 				r.Context(),
 				"select id from sessions where user_id = $1 and expires_at > now()",
 				userId,
 			)
 			err := session.Scan(&sessionId)
-			switch {
-			case err == nil:
-				insertSession = false
-			case !errors.Is(err, pgx.ErrNoRows) && err != nil:
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				log.Printf("Error: unable to get session: %s", err)
 				http.Error(w, "Error: unable to get session", http.StatusInternalServerError)
 				return
@@ -110,9 +146,21 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 			log.Printf("Error: unable to insert user: %s", err)
 			http.Error(w, "Error: unable to insert user", http.StatusInternalServerError)
 			return
+		} else {
+			// user doesn't exist => insert stats
+			_, err := dbtx.Exec(
+				r.Context(),
+				"insert into stats (user_id) values ($1)",
+				userId,
+			)
+			if err != nil {
+				log.Printf("Error: unable to insert stats: %s", err)
+				http.Error(w, "Error: unable to insert stats", http.StatusInternalServerError)
+				return
+			}
 		}
 
-		if insertSession {
+		if sessionId == "" {
 			sid := make([]byte, 32)
 			if _, err := crypto.Read(sid); err != nil {
 				log.Printf("Error: unable to generate session id: %s", err)
@@ -122,7 +170,7 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 			sessionId = hex.EncodeToString(sid)
 
 			expiresAt := time.Now().Add(time.Hour * 24 * 7)
-			_, err := dbConn.Exec(
+			_, err := dbtx.Exec(
 				r.Context(),
 				"insert into sessions (id, user_id, expires_at) values ($1, $2, $3)",
 				sessionId,
@@ -134,6 +182,12 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 				http.Error(w, "Error: unable to insert session", http.StatusInternalServerError)
 				return
 			}
+		}
+
+		if err := dbtx.Commit(r.Context()); err != nil {
+			log.Printf("Error: unable to commit transaction: %s", err)
+			http.Error(w, "Error: unable to commit transaction", http.StatusInternalServerError)
+			return
 		}
 
 		// TODO: modify config when in prod
@@ -185,31 +239,6 @@ func authLogoutHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Req
 
 // game
 
-func authenticate(dbConn *pgx.Conn, w http.ResponseWriter, r *http.Request) (userId int, ok bool) {
-	sessionId, err := r.Cookie("session_id")
-	if err != nil {
-		log.Printf("Error: unable to get session id: %s", err)
-		http.Error(w, "Error: unable to get session id", http.StatusInternalServerError)
-		return
-	}
-	if sessionId == nil {
-		http.Error(w, "Error: session id not found", http.StatusUnauthorized)
-		return
-	}
-	q := `
-		select u.id from sessions s join users u on u.id = s.user_id where s.id = $1
-	`
-	userId = -1
-	err = dbConn.QueryRow(r.Context(), q, sessionId.Value).Scan(&userId)
-	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "Error: session not found", http.StatusUnauthorized)
-	} else if err != nil {
-		log.Printf("Error: unable to get session: %s", err)
-		http.Error(w, "Error: unable to get session", http.StatusInternalServerError)
-	}
-	return
-}
-
 type ConnId uint32
 
 var nextConnId = func() func() ConnId {
@@ -233,6 +262,7 @@ const (
 	// {newPlayerConnId, otherPlayerConnId}
 	MessageTypeLobbyState
 	MessageTypePlayerLeft
+	MessageTypeSaved
 
 	// client -> server
 	__MessageTypeClientToServer
@@ -255,11 +285,6 @@ const (
 	KeyCodeSpace
 )
 
-type PlayerState struct {
-	conn *websocket.Conn
-	keys map[KeyCode]bool
-}
-
 type LobbyMessage struct {
 	connId  ConnId
 	msgType MessageType
@@ -276,7 +301,7 @@ type GameLobby struct {
 	game *GameState
 }
 
-func NewSingleplayerGameLobby(connId ConnId, conn *websocket.Conn) (gl *GameLobby) {
+func NewSingleplayerGameLobby(connId ConnId, conn *websocket.Conn, userId int) (gl *GameLobby) {
 	gl = &GameLobby{
 		singleplayer: true,
 		messageChan:  make(chan LobbyMessage),
@@ -284,8 +309,8 @@ func NewSingleplayerGameLobby(connId ConnId, conn *websocket.Conn) (gl *GameLobb
 		leaveChan:    make(chan ConnId),
 		game:         NewGameState(),
 	}
-	gl.game.addPlayer(connId, conn)
-	gl.game.addPlayer(nextConnId(), nil)
+	gl.game.addPlayer(connId, conn, userId)
+	gl.game.addPlayer(nextConnId(), nil, -1)
 	return
 }
 
@@ -313,7 +338,7 @@ func (gl *GameLobby) broadcast(msgType MessageType, data []byte) {
 	}
 }
 
-func (gl *GameLobby) start() {
+func (gl *GameLobby) start(dbConn *pgx.Conn) {
 	startTime := time.Now()
 
 	for {
@@ -359,11 +384,46 @@ func (gl *GameLobby) start() {
 			// update
 
 			if gl.game.status == GameStatusPlaying {
-				winner, connId := gl.game.update()
+				winner, winnerConnId := gl.game.update()
 				if winner {
 					d := []byte{}
-					d = binary.LittleEndian.AppendUint32(d, uint32(connId))
+					d = binary.LittleEndian.AppendUint32(d, uint32(winnerConnId))
 					gl.broadcast(MessageTypeGameEnd, d)
+
+					// update db stats
+
+					batch := pgx.Batch{}
+					col := func(c string) string {
+						if gl.singleplayer {
+							return fmt.Sprintf("sp_%s", c)
+						}
+						return c
+					}
+
+					for connId, p := range gl.game.players {
+						if p.userId > -1 {
+							var c string
+							if connId == winnerConnId {
+								c = col("wins")
+							} else {
+								c = col("losses")
+							}
+							batch.Queue(
+								fmt.Sprintf("update stats set %s = %s + 1 where user_id = $1", c, c),
+								p.userId,
+							)
+						}
+					}
+
+					if batch.Len() > 0 {
+						br := dbConn.SendBatch(context.Background(), &batch)
+						if _, err := br.Exec(); err != nil {
+							log.Printf("Error: unable to update stats: %s", err)
+						}
+						br.Close()
+					}
+
+					gl.broadcast(MessageTypeSaved, nil)
 				} else {
 					gl.broadcast(MessageTypeGameState, gl.game.encode())
 				}
@@ -391,8 +451,12 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 	var lobbies [10]*GameLobby
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		userId, _ := authenticate(dbConn, w, r)
-		_ = userId
+		userId, status := getUserIdFromSession(dbConn, r)
+		if status == http.StatusInternalServerError {
+			http.Error(w, "Error: unable to get user id", status)
+			return
+		}
+
 		singleplayer := r.URL.Query().Get("singleplayer") == "1"
 
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -423,7 +487,7 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 					return
 				}
 			} else {
-				lobby = NewSingleplayerGameLobby(connId, conn)
+				lobby = NewSingleplayerGameLobby(connId, conn, userId)
 				lobbyIdx = freeIdx
 				lobbies[freeIdx] = lobby
 
@@ -440,7 +504,7 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 					return
 				}
 
-				go lobby.start()
+				go lobby.start(dbConn)
 			}
 		} else {
 			// find lobby with single player
@@ -449,8 +513,8 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 					lobby = l
 					lobbyIdx = lIdx
 
-					lobby.game.addPlayer(connId, conn)
-					go lobby.start()
+					lobby.game.addPlayer(connId, conn, userId)
+					go lobby.start(dbConn)
 
 					break
 				}
@@ -462,7 +526,7 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 					if l == nil {
 						lobby = NewMultiplayerGameLobby()
 						lobbyIdx = lIdx
-						lobby.game.addPlayer(connId, conn)
+						lobby.game.addPlayer(connId, conn, userId)
 						lobbies[lIdx] = lobby
 						break
 					}
@@ -579,7 +643,7 @@ func main() {
 		Endpoint:     google.Endpoint,
 	}
 
-	http.HandleFunc("/auth", authHandler)
+	http.HandleFunc("/auth", authHandler(dbConn))
 	http.HandleFunc("/callback", callbackHandler(dbConn))
 	http.HandleFunc("/logout", authLogoutHandler(dbConn))
 	http.HandleFunc("/game", gameHandler(dbConn))

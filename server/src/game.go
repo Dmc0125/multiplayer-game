@@ -33,6 +33,7 @@ type GameBall struct {
 
 type GamePlayerState struct {
 	conn   *websocket.Conn
+	userId int
 	keys   map[KeyCode]bool
 	left   bool
 	paddle *GamePaddle
@@ -67,9 +68,10 @@ func NewGameState() *GameState {
 	return gs
 }
 
-func (gs *GameState) addPlayer(connId ConnId, conn *websocket.Conn) {
+func (gs *GameState) addPlayer(connId ConnId, conn *websocket.Conn, userId int) {
 	gs.players[connId] = &GamePlayerState{
 		conn:   conn,
+		userId: userId,
 		keys:   make(map[KeyCode]bool),
 		left:   len(gs.players) == 0,
 		paddle: &GamePaddle{},

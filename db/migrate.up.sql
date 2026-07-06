@@ -15,4 +15,14 @@ create table sessions (
     expires_at timestamp default now() not null
 );
 
+create table stats (
+    user_id int references users(id) not null primary key,
+    wins int default 0 not null,
+    losses int default 0 not null,
+    sp_wins int default 0 not null,
+    sp_losses int default 0 not null,
+    created_at timestamp default now() not null,
+    updated_at timestamp default now() not null
+);
+
 commit;
