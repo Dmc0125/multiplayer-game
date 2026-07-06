@@ -3,8 +3,7 @@ begin;
 create table users (
     id serial primary key,
     google_email text unique not null,
-    google_name text not null,
-    google_avatar_url text,
+    username text not null,
     created_at timestamp default now() not null
 );
 

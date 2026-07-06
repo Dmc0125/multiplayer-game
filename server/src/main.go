@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -136,6 +137,16 @@ func authHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 }
 
 func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) {
+	prefixes := []string{"Paddle", "Smash", "Spin", "Turbo", "Bouncy", "Rally", "Woosh", "Bloop", "Slap", "Bonk", "Zippy", "Twirl", "Whack", "Speedy", "Smashy", "Zappy", "Wiggly", "Floppy", "Boomy", "Pong"}
+	suffixes := []string{"Paddle", "Smasher", "Spinner", "Bopper", "Whacker", "Bonker", "Rallyer", "Lobber", "Dinker", "Slapper", "Banger", "Pinger", "Swoosher", "Topspin", "Dropshot", "Volley", "Dasher", "Popper", "Zipper", "Ace"}
+
+	generateRandomUsername := func() string {
+		p := prefixes[rand.Intn(len(prefixes))]
+		s := suffixes[rand.Intn(len(suffixes))]
+		n := rand.Intn(100)
+		return fmt.Sprintf("%s%s%d", p, s, n)
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		state := r.URL.Query().Get("state")
 		if state != os.Getenv("OAUTH_STATE") {
@@ -166,8 +177,6 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 
 		var userInfo struct {
 			Email   string `json:"email"`
-			Name    string `json:"name"`
-			Picture string `json:"picture"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
 			logReqError(r, "unable to decode user info", "error", err)
@@ -188,12 +197,11 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 		insertedUser := dbtx.QueryRow(
 			r.Context(),
 			`
-			insert into users (google_email, google_name, google_avatar_url) values ($1, $2, $3) 
+			insert into users (google_email, username) values ($1, $2)
 			on conflict (google_email) do nothing returning id
 			`,
 			userInfo.Email,
-			userInfo.Name,
-			userInfo.Picture,
+			generateRandomUsername(),
 		)
 
 		var userId int
