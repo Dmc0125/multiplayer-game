@@ -76,6 +76,11 @@ func (gs *GameState) addPlayer(connId ConnId, conn *websocket.Conn) {
 	}
 }
 
+func (gs *GameState) removePlayer(connId ConnId) {
+	delete(gs.players, connId)
+	gs.status = GameStatusNone
+}
+
 func (gs *GameState) encode() (out []byte) {
 	// connId => 4 bytes, paddleY => 4 bytes = 8 bytes * 2
 	// ballX, ballY 8 bytes

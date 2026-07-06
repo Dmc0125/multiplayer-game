@@ -185,7 +185,7 @@ func authLogoutHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Req
 
 // game
 
-func authenticate(dbConn *pgx.Conn, w http.ResponseWriter, r *http.Request) (ok bool) {
+func authenticate(dbConn *pgx.Conn, w http.ResponseWriter, r *http.Request) (userId int, ok bool) {
 	sessionId, err := r.Cookie("session_id")
 	if err != nil {
 		log.Printf("Error: unable to get session id: %s", err)
@@ -196,7 +196,11 @@ func authenticate(dbConn *pgx.Conn, w http.ResponseWriter, r *http.Request) (ok 
 		http.Error(w, "Error: session id not found", http.StatusUnauthorized)
 		return
 	}
-	err = dbConn.QueryRow(r.Context(), "select true from sessions where id = $1", sessionId.Value).Scan(&ok)
+	q := `
+		select u.id from sessions s join users u on u.id = s.user_id where s.id = $1
+	`
+	userId = -1
+	err = dbConn.QueryRow(r.Context(), q, sessionId.Value).Scan(&userId)
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "Error: session not found", http.StatusUnauthorized)
 	} else if err != nil {
@@ -228,6 +232,7 @@ const (
 	MessageTypeReady
 	// {newPlayerConnId, otherPlayerConnId}
 	MessageTypeLobbyState
+	MessageTypePlayerLeft
 
 	// client -> server
 	__MessageTypeClientToServer
@@ -265,6 +270,7 @@ type GameLobby struct {
 	singleplayer bool
 	messageChan  chan LobbyMessage
 	stopChan     chan struct{}
+	leaveChan    chan ConnId
 
 	//
 	game *GameState
@@ -275,6 +281,7 @@ func NewSingleplayerGameLobby(connId ConnId, conn *websocket.Conn) (gl *GameLobb
 		singleplayer: true,
 		messageChan:  make(chan LobbyMessage),
 		stopChan:     make(chan struct{}),
+		leaveChan:    make(chan ConnId),
 		game:         NewGameState(),
 	}
 	gl.game.addPlayer(connId, conn)
@@ -287,6 +294,7 @@ func NewMultiplayerGameLobby() (gl *GameLobby) {
 		singleplayer: false,
 		messageChan:  make(chan LobbyMessage),
 		stopChan:     make(chan struct{}),
+		leaveChan:    make(chan ConnId),
 		game:         NewGameState(),
 	}
 	return
@@ -308,20 +316,12 @@ func (gl *GameLobby) broadcast(msgType MessageType, data []byte) {
 func (gl *GameLobby) start() {
 	startTime := time.Now()
 
-	lobbyReady := func() (ready bool) {
-		ready = true
-		for _, p := range gl.game.players {
-			if p.conn != nil {
-				ready = ready && p.ready
-			}
-		}
-		return
-	}
-
 	for {
 		select {
 		case <-gl.stopChan:
 			return
+		case cid := <-gl.leaveChan:
+			gl.game.removePlayer(cid)
 		case lm := <-gl.messageChan:
 			switch lm.msgType {
 			case MessageTypeKey:
@@ -343,7 +343,14 @@ func (gl *GameLobby) start() {
 					gl.broadcast(MessageTypeReady, d)
 				}
 
-				if lobbyReady() {
+				ready := true
+				for _, p := range gl.game.players {
+					if p.conn != nil {
+						ready = ready && p.ready
+					}
+				}
+
+				if ready {
 					gl.game.start()
 					gl.broadcast(MessageTypeStarted, gl.game.encode())
 				}
@@ -384,10 +391,8 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 	var lobbies [10]*GameLobby
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		// if !authenticate(dbConn, w, r) {
-		// 	return
-		// }
-
+		userId, _ := authenticate(dbConn, w, r)
+		_ = userId
 		singleplayer := r.URL.Query().Get("singleplayer") == "1"
 
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -508,11 +513,17 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 				lobby.stopChan <- struct{}{}
 				lobbies[lobbyIdx] = nil
 			} else {
-				// depends on count of players
 				if len(lobby.game.players) == 2 {
+					lobby.leaveChan <- connId
+					for _, p := range lobby.game.players {
+						if p.conn != nil {
+							p.conn.Write(r.Context(), websocket.MessageBinary, []byte{byte(MessageTypePlayerLeft)})
+						}
+					}
+				} else {
 					lobby.stopChan <- struct{}{}
+					lobbies[lobbyIdx] = nil
 				}
-				lobbies[lobbyIdx] = nil
 			}
 		}()
 

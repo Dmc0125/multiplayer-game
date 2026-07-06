@@ -61,7 +61,13 @@ function drawGameState(
     ctx.fill()
 }
 
-type GameStatus = "connecting" | "waiting" | "game-start" | "game-end" | "playing"
+type GameStatus =
+    | "connecting"
+    | "waiting"
+    | "waiting-player-left"
+    | "game-start"
+    | "game-end"
+    | "playing"
 
 type MenuScreenProps = {
     status: GameStatus
@@ -77,6 +83,13 @@ function MenuScreen({ status, winner, players, onStart, onPlayAgain }: MenuScree
             return <p className="text-white">Connecting</p>
         case "waiting":
             return <p className="text-white">Waiting for other player</p>
+        case "waiting-player-left":
+            return (
+                <div className="flex flex-col gap-4 items-center justify-center">
+                    <p className="text-white">Other player left</p>
+                    <p className="text-white">Waiting for other player</p>
+                </div>
+            )
         case "game-start":
             return (
                 <button
@@ -286,6 +299,34 @@ export function Game({ singleplayer }: GameProps) {
 
         return connection.current.close
     }, [])
+
+    useEffect(() => {
+        connection.current.onMessagePlayerLeft = function () {
+            let connId: number
+            for (const _cid in players) {
+                const cid = Number(_cid)
+                const p = players[cid]
+                if (!p.me) {
+                    connId = cid
+                    break
+                }
+            }
+
+            setPlayers((prev) => {
+                delete prev[connId]
+                return { ...prev }
+            })
+            setPlayersPositions((prev) => {
+                if (prev.left === connId) {
+                    prev.left = undefined
+                } else {
+                    prev.right = undefined
+                }
+                return { ...prev }
+            })
+            setStatus("waiting-player-left")
+        }
+    }, [players, playersPositions])
 
     useEffect(() => {
         const canvas = canvasElement.current!

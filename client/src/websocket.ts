@@ -5,6 +5,7 @@ const MESSAGE_TYPE_GAME_STATE = 3
 const MESSAGE_TYPE_GAME_END = 4
 const MESSAGE_TYPE_READY = 5
 const MESSAGE_TYPE_LOBBY_STATE = 6
+const MESSAGE_TYPE_PLAYER_LEFT = 7
 
 const MESSAGE_TYPE_KEY = 100
 const MESSAGE_TYPE_START = 101
@@ -35,6 +36,7 @@ export type Connection = {
     close: () => void
     onMessageLobbyState?: (myConnId: number, otherConnId: number | undefined) => void
     onMessageJoined?: (connId: number) => void
+    onMessagePlayerLeft?: () => void
     onMessageStarted?: () => void
     onMessageReady?: (connId: number) => void
     onMessageGameState?: (paddles: Paddle[], ballX: number, ballY: number) => void
@@ -103,6 +105,10 @@ export function connectToGameServer(singleplayer: boolean) {
             case MESSAGE_TYPE_JOINED: {
                 const connId = view.getUint32(1, true)
                 connection.onMessageJoined?.(connId)
+                break
+            }
+            case MESSAGE_TYPE_PLAYER_LEFT: {
+                connection.onMessagePlayerLeft?.()
                 break
             }
             case MESSAGE_TYPE_STARTED: {
