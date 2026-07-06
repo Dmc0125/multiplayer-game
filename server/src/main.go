@@ -233,6 +233,7 @@ const (
 	__MessageTypeClientToServer
 	MessageTypeKey = 100 + iota - __MessageTypeClientToServer - 1
 	MessageTypeStart
+	MessageTypePause
 )
 
 type LobbyStatus uint8
@@ -332,16 +333,6 @@ func (gl *GameLobby) start() {
 				keyCode := KeyCode(lm.data[0])
 				pressed := lm.data[1] == 1
 
-				// TODO: needs to be handled for each player
-				if pressed && keyCode == KeyCodeSpace {
-					switch gl.game.status {
-					case GameStatusPlaying:
-						gl.game.status = GameStatusPaused
-					case GameStatusPaused:
-						gl.game.status = GameStatusPlaying
-					}
-				}
-
 				gl.game.players[lm.connId].keys[keyCode] = pressed
 			case MessageTypeStart:
 				if gl.game.status == GameStatusEnded || gl.game.status == GameStatusNone {
@@ -393,9 +384,9 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 	var lobbies [10]*GameLobby
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !authenticate(dbConn, w, r) {
-			return
-		}
+		// if !authenticate(dbConn, w, r) {
+		// 	return
+		// }
 
 		singleplayer := r.URL.Query().Get("singleplayer") == "1"
 

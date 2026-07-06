@@ -85,7 +85,7 @@ function MenuScreen({ status, winner, players, onStart, onPlayAgain }: MenuScree
                         onStart?.()
                     }}
                 >
-                    Start
+                    Start (r)
                 </button>
             )
         case "game-end":
@@ -307,6 +307,22 @@ export function Game({ singleplayer }: GameProps) {
             drawGameState(ctx, paddlesDraw, ballX, ballY)
         }
     }, [connId, playersPositions])
+
+    useEffect(() => {
+        function s(event: KeyboardEvent) {
+            if (event.key === "r") {
+                connection.current.sendStartMessage()
+            }
+        }
+
+        if (status === "game-start" || status === "game-end") {
+            window.addEventListener("keydown", s)
+        }
+
+        return () => {
+            window.removeEventListener("keydown", s)
+        }
+    }, [status])
 
     return (
         <div className="w-full max-w-[800px] mt-10">

@@ -31,6 +31,7 @@ export type Paddle = {
 
 export type Connection = {
     sendStartMessage: () => void
+    sendPauseMessage: () => void
     close: () => void
     onMessageLobbyState?: (myConnId: number, otherConnId: number | undefined) => void
     onMessageJoined?: (connId: number) => void
@@ -50,12 +51,11 @@ export function connectToGameServer(singleplayer: boolean) {
         ws.close()
     }
 
-    function sendStartMessage() {
+    connection.sendStartMessage = function () {
         if (ws.readyState === ws.OPEN) {
             ws.send(new Uint8Array([MESSAGE_TYPE_START]))
         }
     }
-    connection.sendStartMessage = sendStartMessage
 
     function windowKeyDown(event: KeyboardEvent) {
         const keyCode = keyCodeMap[event.key]
