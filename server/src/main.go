@@ -23,8 +23,6 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-const PORT = ":8080"
-
 type logResponseWriter struct {
 	http.ResponseWriter
 	status int
@@ -115,28 +113,43 @@ func logReqError(r *http.Request, msg string, args ...any) {
 
 // auth
 
+func createSessionCookie(w http.ResponseWriter, value, domain string, prod bool, expiresAt time.Time) {
+	c := http.Cookie{
+		Name:     "session_id",
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   prod,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expiresAt,
+	}
+	if prod {
+		c.Domain = domain
+	}
+	http.SetCookie(w, &c)
+}
+
 var authConfig *oauth2.Config
 
-func authHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) {
+func authHandler(dbConn *pgx.Conn, clientRedirectUrl, oauthState string) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_, status := getUserIdFromSession(dbConn, r)
 		switch status {
 		case http.StatusOK:
 			logReqInfo(r, "user already logged in")
-			http.Redirect(w, r, os.Getenv("CLIENT_REDIRECT_URL"), http.StatusSeeOther)
+			http.Redirect(w, r, clientRedirectUrl, http.StatusSeeOther)
 		case http.StatusInternalServerError:
 			logReqInfo(r, "unable to get user id", "error", status)
 			http.Error(w, "Error: unable to get user id", status)
 		default:
 			logReqInfo(r, "redirecting to auth")
-			state := os.Getenv("OAUTH_STATE")
-			url := authConfig.AuthCodeURL(state)
+			url := authConfig.AuthCodeURL(oauthState)
 			http.Redirect(http.ResponseWriter(w), r, url, http.StatusFound)
 		}
 	}
 }
 
-func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) {
+func callbackHandler(dbConn *pgx.Conn, clientRedirectUrl, oauthState, domain string, prod bool) func(w http.ResponseWriter, r *http.Request) {
 	prefixes := []string{"Paddle", "Smash", "Spin", "Turbo", "Bouncy", "Rally", "Woosh", "Bloop", "Slap", "Bonk", "Zippy", "Twirl", "Whack", "Speedy", "Smashy", "Zappy", "Wiggly", "Floppy", "Boomy", "Pong"}
 	suffixes := []string{"Paddle", "Smasher", "Spinner", "Bopper", "Whacker", "Bonker", "Rallyer", "Lobber", "Dinker", "Slapper", "Banger", "Pinger", "Swoosher", "Topspin", "Dropshot", "Volley", "Dasher", "Popper", "Zipper", "Ace"}
 
@@ -149,7 +162,7 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		state := r.URL.Query().Get("state")
-		if state != os.Getenv("OAUTH_STATE") {
+		if state != oauthState {
 			logReqInfo(r, "invalid state", "state", state)
 			http.Error(w, "Error: invalid state", http.StatusBadRequest)
 			return
@@ -249,6 +262,7 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 			}
 		}
 
+		expiresAt := time.Now().Add(time.Hour * 24 * 7)
 		if sessionId == "" {
 			logReqInfo(r, "new session", "user_id", userId)
 
@@ -260,7 +274,6 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 			}
 			sessionId = hex.EncodeToString(sid)
 
-			expiresAt := time.Now().Add(time.Hour * 24 * 7)
 			_, err := dbtx.Exec(
 				r.Context(),
 				"insert into sessions (id, user_id, expires_at) values ($1, $2, $3)",
@@ -286,21 +299,12 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 		logReqInfo(r, "user inserted")
 
 		logReqInfo(r, "setting session cookie")
-		// TODO: modify config when in prod
-		isProd := os.Getenv("ENV") == "prod"
-		http.SetCookie(w, &http.Cookie{
-			Name:     "session_id",
-			Value:    sessionId,
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   isProd,
-			SameSite: http.SameSiteLaxMode,
-		})
-		http.Redirect(w, r, os.Getenv("CLIENT_REDIRECT_URL"), http.StatusSeeOther)
+		createSessionCookie(w, sessionId, domain, prod, expiresAt)
+		http.Redirect(w, r, clientRedirectUrl, http.StatusSeeOther)
 	}
 }
 
-func authLogoutHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) {
+func authLogoutHandler(dbConn *pgx.Conn, clientRedirectUrl, domain string, prod bool) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionId, _ := r.Cookie("session_id")
 		if sessionId != nil {
@@ -318,15 +322,8 @@ func authLogoutHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Req
 		}
 
 		logReqInfo(r, "deleting session cookie")
-		http.SetCookie(w, &http.Cookie{
-			Name:     "session_id",
-			Value:    "",
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   false,
-			SameSite: http.SameSiteLaxMode,
-		})
-		http.Redirect(w, r, os.Getenv("CLIENT_REDIRECT_URL"), http.StatusSeeOther)
+		createSessionCookie(w, "", domain, prod, time.Now())
+		http.Redirect(w, r, clientRedirectUrl, http.StatusSeeOther)
 	}
 }
 
@@ -745,7 +742,17 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func loadEnvVariable(key string, required bool) (value string) {
+	value = os.Getenv(key)
+	if value == "" && required {
+		panic(fmt.Sprintf("Error: required env variable %s not set", key))
+	}
+	return
+}
+
 func main() {
+	const PORT = ":8080"
+
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level:     slog.LevelDebug,
 		AddSource: true,
@@ -758,11 +765,11 @@ func main() {
 
 	dbUrl := fmt.Sprintf(
 		"postgresql://%s:%s@%s:%s/%s",
-		os.Getenv("DB_USER"),
-		os.Getenv("DB_PASSWORD"),
-		os.Getenv("DB_HOST"),
-		os.Getenv("DB_PORT"),
-		os.Getenv("DB"),
+		loadEnvVariable("DB_USER", true),
+		loadEnvVariable("DB_PASSWORD", true),
+		loadEnvVariable("DB_HOST", true),
+		loadEnvVariable("DB_PORT", true),
+		loadEnvVariable("DB", true),
 	)
 	dbConn, err := pgx.Connect(context.Background(), dbUrl)
 	if err != nil {
@@ -771,25 +778,35 @@ func main() {
 	}
 	slog.Info("connected to db")
 
+	prod := loadEnvVariable("ENV", false) == "prod"
+	domain := loadEnvVariable("DOMAIN", true)
+
 	authConfig = &oauth2.Config{
-		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
-		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-		RedirectURL:  os.Getenv("REDIRECT_URL"),
+		ClientID:     loadEnvVariable("GOOGLE_CLIENT_ID", true),
+		ClientSecret: loadEnvVariable("GOOGLE_CLIENT_SECRET", true),
 		Scopes:       []string{"openid", "profile", "email"},
 		Endpoint:     google.Endpoint,
 	}
+	if prod {
+		authConfig.RedirectURL = fmt.Sprintf("https://%s/api/callback", domain)
+	} else {
+		authConfig.RedirectURL = fmt.Sprintf("http://%s%s/api/callback", domain, PORT)
+	}
 	slog.Info("loaded auth config")
 
+	clientRedirectUrl := loadEnvVariable("CLIENT_REDIRECT_URL", true)
+	oauthState := loadEnvVariable("OAUTH_STATE", true)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/auth", authHandler(dbConn))
-	mux.HandleFunc("/callback", callbackHandler(dbConn))
-	mux.HandleFunc("/logout", authLogoutHandler(dbConn))
-	mux.HandleFunc("/game", gameHandler(dbConn))
+	mux.HandleFunc("/api/auth", authHandler(dbConn, clientRedirectUrl, oauthState))
+	mux.HandleFunc("/api/callback", callbackHandler(dbConn, clientRedirectUrl, oauthState, domain, prod))
+	mux.HandleFunc("/api/logout", authLogoutHandler(dbConn, clientRedirectUrl, domain, prod))
+	mux.HandleFunc("/api/game", gameHandler(dbConn))
 
 	handler := logRequest(mux)
 
-	slog.Info("listening at http://localhost:8080")
+	slog.Info(fmt.Sprintf("listening at http://%s%s", domain, PORT))
 	if err := http.ListenAndServe(PORT, handler); err != nil {
-		fmt.Printf("Error: %s", err)
+		panic(fmt.Sprintf("Error: %s", err))
 	}
 }

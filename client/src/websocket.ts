@@ -1,3 +1,10 @@
+import { DOMAIN, PROD } from "astro:env/client"
+
+let WEBSOCKET_URL = "ws://localhost:8080/api/game"
+if (PROD) {
+    WEBSOCKET_URL = `wss://${DOMAIN}/api/game`
+}
+
 const MESSAGE_TYPE_JOINED = 0
 const MESSAGE_TYPE_FULL = 1
 const MESSAGE_TYPE_STARTED = 2
@@ -48,7 +55,7 @@ export type Connection = {
 export function connectToGameServer(singleplayer: boolean) {
     const connection = {} as Connection
 
-    const ws = new WebSocket(`ws://localhost:8080/game?${singleplayer ? "singleplayer=1" : ""}`)
+    const ws = new WebSocket(`${WEBSOCKET_URL}?${singleplayer ? "singleplayer=1" : ""}`)
     ws.binaryType = "arraybuffer"
 
     connection.close = () => {

@@ -1,11 +1,13 @@
 ---
-import { AUTH_URL } from "astro:env/server"
+import { DOMAIN, PROD } from "astro:env/client"
 
 import { db } from "../db"
 import Layout from "./../Layout.astro"
 import UserInfo from "../components/UserInfo.astro"
 
 export const prerender = false
+
+const API_URL = PROD ? `https://${DOMAIN}` : "http://localhost:8080"
 
 let loggedIn = false
 let name = ""
@@ -14,6 +16,7 @@ let wins = 0,
     spWins = 0,
     spLosses = 0
 
+console.log(Astro.cookies.get("session_id"))
 if (Astro.cookies.has("session_id")) {
     const cookie = Astro.cookies.get("session_id")
     const sessionId = cookie?.value
@@ -54,7 +57,7 @@ if (Astro.cookies.has("session_id")) {
                 <>
                     <a
                         class="btn w-80 mt-8 flex items-center justify-center"
-                        href={`${AUTH_URL}/auth`}
+                        href={`${API_URL}/api/auth`}
                     >
                         Login
                     </a>
@@ -71,7 +74,7 @@ if (Astro.cookies.has("session_id")) {
             loggedIn && (
                 <a
                     class="btn w-80 mt-8 flex items-center justify-center"
-                    href={`${AUTH_URL}/logout`}
+                    href={`${API_URL}/api/logout`}
                 >
                     Logout
                 </a>
