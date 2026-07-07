@@ -176,7 +176,7 @@ func callbackHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Reque
 		defer resp.Body.Close()
 
 		var userInfo struct {
-			Email   string `json:"email"`
+			Email string `json:"email"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
 			logReqError(r, "unable to decode user info", "error", err)
@@ -435,8 +435,6 @@ func (gl *GameLobby) broadcast(msgType MessageType, data []byte) {
 }
 
 func (gl *GameLobby) start(dbConn *pgx.Conn) {
-	startTime := time.Now()
-
 	for {
 		select {
 		case <-gl.stopChan:
@@ -454,7 +452,7 @@ func (gl *GameLobby) start(dbConn *pgx.Conn) {
 				keyCode := KeyCode(lm.data[0])
 				pressed := lm.data[1] == 1
 
-				gl.game.players[lm.connId].keys[keyCode] = pressed
+				gl.game.setKey(lm.connId, keyCode, pressed)
 			case MessageTypeStart:
 				if gl.game.status == GameStatusEnded || gl.game.status == GameStatusNone {
 					gl.game.players[lm.connId].ready = true
@@ -480,72 +478,64 @@ func (gl *GameLobby) start(dbConn *pgx.Conn) {
 		default:
 			// update
 
-			if gl.game.status == GameStatusPlaying {
-				winner, winnerConnId := gl.game.update()
-				if winner {
-					slog.Info("game ended", "lobby_idx", gl.index, "winner_conn_id", winnerConnId)
+			if gl.game.status != GameStatusPlaying {
+				gl.game.advanceTime()
+				continue
+			}
 
-					d := []byte{}
-					d = binary.LittleEndian.AppendUint32(d, uint32(winnerConnId))
-					gl.broadcast(MessageTypeGameEnd, d)
+			winner, winnerConnId := gl.game.update()
+			if winner {
+				slog.Info("game ended", "lobby_idx", gl.index, "winner_conn_id", winnerConnId)
 
-					// update db stats
-					slog.Info("updating db stats", "lobby_idx", gl.index)
+				d := []byte{}
+				d = binary.LittleEndian.AppendUint32(d, uint32(winnerConnId))
+				gl.broadcast(MessageTypeGameEnd, d)
 
-					batch := pgx.Batch{}
-					col := func(c string) string {
-						if gl.singleplayer {
-							return fmt.Sprintf("sp_%s", c)
-						}
-						return c
+				// update db stats
+				slog.Info("updating db stats", "lobby_idx", gl.index)
+
+				batch := pgx.Batch{}
+				col := func(c string) string {
+					if gl.singleplayer {
+						return fmt.Sprintf("sp_%s", c)
 					}
-
-					for connId, p := range gl.game.players {
-						if p.userId > -1 {
-							var c string
-							if connId == winnerConnId {
-								c = col("wins")
-							} else {
-								c = col("losses")
-							}
-							batch.Queue(
-								fmt.Sprintf("update stats set %s = %s + 1 where user_id = $1", c, c),
-								p.userId,
-							)
-						}
-					}
-
-					if batch.Len() > 0 {
-						br := dbConn.SendBatch(context.Background(), &batch)
-						if _, err := br.Exec(); err != nil {
-							slog.Error("unable to update stats", "lobby_idx", gl.index, "error", err)
-						} else {
-							slog.Info("updated stats", "lobby_idx", gl.index)
-						}
-						br.Close()
-					}
-
-					slog.Info("broadcasting saved", "lobby_idx", gl.index)
-					gl.broadcast(MessageTypeSaved, nil)
-				} else {
-					gl.broadcast(MessageTypeGameState, gl.game.encode())
+					return c
 				}
+
+				for connId, p := range gl.game.players {
+					if p.userId > -1 {
+						var c string
+						if connId == winnerConnId {
+							c = col("wins")
+						} else {
+							c = col("losses")
+						}
+						batch.Queue(
+							fmt.Sprintf("update stats set %s = %s + 1 where user_id = $1", c, c),
+							p.userId,
+						)
+					}
+				}
+
+				if batch.Len() > 0 {
+					br := dbConn.SendBatch(context.Background(), &batch)
+					if _, err := br.Exec(); err != nil {
+						slog.Error("unable to update stats", "lobby_idx", gl.index, "error", err)
+					} else {
+						slog.Info("updated stats", "lobby_idx", gl.index)
+					}
+					br.Close()
+				}
+
+				slog.Info("broadcasting saved", "lobby_idx", gl.index)
+				gl.broadcast(MessageTypeSaved, nil)
+			} else {
+				gl.broadcast(MessageTypeGameState, gl.game.encode())
 			}
 
 			// time
 
-			dt := time.Since(startTime).Seconds()
-			if dt < FRAME_TIME_SECONDS {
-				diff := FRAME_TIME_SECONDS - dt
-				time.Sleep(time.Duration(diff * 1e9))
-				dt += diff
-			}
-
-			if gl.game.status == GameStatusPlaying {
-				gl.game.dt = dt
-			}
-
-			startTime = time.Now()
+			gl.game.advanceTime()
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"math/rand"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -52,20 +53,42 @@ const (
 )
 
 type GameState struct {
+	prevFrameEndTime time.Time
+	dt               float64
+
 	players map[ConnId]*GamePlayerState
-	dt      float64
 	status  GameStatus
 	ball    *GameBall
 }
 
 func NewGameState() *GameState {
 	gs := &GameState{
-		players: make(map[ConnId]*GamePlayerState),
-		dt:      0.0,
-		status:  GameStatusNone,
-		ball:    &GameBall{},
+		prevFrameEndTime: time.Now(),
+		dt:               0.0,
+		players:          make(map[ConnId]*GamePlayerState),
+		status:           GameStatusNone,
+		ball:             &GameBall{},
 	}
 	return gs
+}
+
+func (gs *GameState) setKey(connId ConnId, key KeyCode, pressed bool) {
+	gs.players[connId].keys[key] = pressed
+}
+
+func (gs *GameState) advanceTime() {
+	dt := time.Since(gs.prevFrameEndTime).Seconds()
+	if dt < FRAME_TIME_SECONDS {
+		diff := FRAME_TIME_SECONDS - dt
+		time.Sleep(time.Duration(diff * 1e9))
+		dt += diff
+	}
+
+	if gs.status == GameStatusPlaying {
+		gs.dt = dt
+	}
+
+	gs.prevFrameEndTime = time.Now()
 }
 
 func (gs *GameState) addPlayer(connId ConnId, conn *websocket.Conn, userId int) {
