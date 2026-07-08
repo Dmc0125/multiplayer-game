@@ -792,7 +792,7 @@ func main() {
 	} else {
 		authConfig.RedirectURL = fmt.Sprintf("http://%s%s/api/callback", domain, PORT)
 	}
-	slog.Info("loaded auth config")
+	slog.Info("loaded auth config", "redirect_url", authConfig.RedirectURL)
 
 	clientRedirectUrl := loadEnvVariable("CLIENT_REDIRECT_URL", true)
 	oauthState := loadEnvVariable("OAUTH_STATE", true)

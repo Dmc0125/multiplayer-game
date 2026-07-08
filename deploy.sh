@@ -20,7 +20,7 @@ set -euo pipefail
 project_dir=$1
 server_ip=$2
 
-if [ -z "$project_dir" ] || [ -z "$server_ip" ] ; then
+if [ -z "$project_dir" ] || [ -z "$server_ip" ]; then
   echo "Usage: $0 <project_dir> <server_ip>"
   exit 1
 fi

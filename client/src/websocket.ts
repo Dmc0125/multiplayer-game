@@ -1,9 +1,9 @@
-import { DOMAIN, PROD } from "astro:env/client"
-
 let WEBSOCKET_URL = "ws://localhost:8080/api/game"
-if (PROD) {
-    WEBSOCKET_URL = `wss://${DOMAIN}/api/game`
+if (import.meta.env.MODE === "production") {
+    const [_, domain] = import.meta.env.SITE.split("https")
+    WEBSOCKET_URL = `wss${domain}/api/game`
 }
+console.log(import.meta.env)
 
 const MESSAGE_TYPE_JOINED = 0
 const MESSAGE_TYPE_FULL = 1

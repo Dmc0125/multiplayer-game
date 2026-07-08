@@ -1,13 +1,12 @@
 ---
-import { DOMAIN, PROD } from "astro:env/client"
-
 import { db } from "../db"
 import Layout from "./../Layout.astro"
 import UserInfo from "../components/UserInfo.astro"
 
 export const prerender = false
 
-const API_URL = PROD ? `https://${DOMAIN}` : "http://localhost:8080"
+const isProd = import.meta.env.MODE === "production"
+const API_URL = isProd ? import.meta.env.SITE : "http://localhost:8080"
 
 let loggedIn = false
 let name = ""

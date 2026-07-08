@@ -12,6 +12,7 @@ export default defineConfig({
             noExternal: true,
         },
     },
+    site: "https://paddle.dmnk.app",
     integrations: [react()],
     env: {
         schema: {
@@ -20,8 +21,6 @@ export default defineConfig({
             DB: envField.string({ context: "server", access: "secret" }),
             DB_HOST: envField.string({ context: "server", access: "secret" }),
             DB_PORT: envField.number({ context: "server", access: "secret" }),
-            DOMAIN: envField.string({ context: "client", access: "public", default: "" }),
-            PROD: envField.boolean({ context: "client", access: "public", default: false }),
         },
     },
 })
