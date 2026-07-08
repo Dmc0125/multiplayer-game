@@ -29,9 +29,11 @@ button {
         text-orange text-sm sm:text-base
         tracking-widest uppercase
         transition-all duration-150 ease-in-out
-        shadow-[0_0_12px_theme(colors.orange/40%)]
-        hover:bg-orange hover:text-dark-2 hover:shadow-[0_0_24px_theme(colors.orange/70%)]
-        active:translate-y-0.5 active:shadow-[0_0_6px_theme(colors.orange/40%)]
+        /* shadow-[0_0_12px_theme(colors.orange/40%)] */
+        hover:bg-orange hover:text-dark-2 
+        /* hover:shadow-[0_0_24px_theme(colors.orange/70%)] */
+        active:translate-y-0.5 
+        /* active:shadow-[0_0_6px_theme(colors.orange/40%)] */
         disabled:pointer-events-none
         disabled:border-dark-1
         disabled:text-dark-3

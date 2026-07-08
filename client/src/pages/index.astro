@@ -16,7 +16,6 @@ let wins = 0,
     spWins = 0,
     spLosses = 0
 
-console.log(Astro.cookies.get("session_id"))
 if (Astro.cookies.has("session_id")) {
     const cookie = Astro.cookies.get("session_id")
     const sessionId = cookie?.value
