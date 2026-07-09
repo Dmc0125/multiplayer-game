@@ -1,20 +1,8 @@
-import { useEffect, useRef, useState } from "react"
-import { connectToGameServer, type Paddle, type Connection } from "../websocket"
+import { useEffect, useRef, useState, type RefObject } from "react"
+import { connectToGameServer, keyCodeMap, type Paddle, type Connection } from "../websocket"
 
 export const gameWidth = 800
 export const gameHeight = 400
-
-function resizeCanvas(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) {
-    ctx.setTransform(1, 0, 0, 1, 0, 0)
-
-    const r = canvas.getBoundingClientRect()
-    canvas.width = r.width
-    canvas.height = r.height
-
-    const scaleX = canvas.width / gameWidth
-    const scaleY = canvas.height / gameHeight
-    ctx.scale(scaleX, scaleY)
-}
 
 export const PADDLE_WIDTH = 10
 export const PADDLE_HEIGHT = 100
@@ -66,70 +54,65 @@ type GameStatus =
     | "waiting"
     | "waiting-player-left"
     | "game-start"
-    | "game-end"
+    | { status: "game-end"; saved: boolean; winner: number }
     | "playing"
 
 type MenuScreenProps = {
     status: GameStatus
-    winner: number | undefined
     players: Record<number, Player>
-    saved: boolean
     onStart: (() => void) | undefined
     onPlayAgain: (() => void) | undefined
 }
 
-function MenuScreen({ status, winner, players, saved, onStart, onPlayAgain }: MenuScreenProps) {
-    switch (status) {
-        case "connecting":
-            return <p className="text-white">Connecting</p>
-        case "waiting":
-            return <p className="text-white">Waiting for other player</p>
-        case "waiting-player-left":
-            return (
-                <div className="flex flex-col gap-4 items-center justify-center">
-                    <p className="text-white">Other player left</p>
-                    <p className="text-white">Waiting for other player</p>
-                </div>
-            )
-        case "game-start":
-            return (
+function MenuScreen({ status, players, onStart, onPlayAgain }: MenuScreenProps) {
+    if (status === "connecting") {
+        return <p className="text-white">Connecting</p>
+    }
+    if (status === "waiting") {
+        return <p className="text-white">Waiting for other player</p>
+    }
+    if (status === "waiting-player-left") {
+        return (
+            <div className="flex flex-col gap-4 items-center justify-center">
+                <p className="text-white">Other player left</p>
+                <p className="text-white">Waiting for other player</p>
+            </div>
+        )
+    }
+    if (status === "game-start") {
+        return (
+            <button
+                className="btn"
+                onClick={() => {
+                    onStart?.()
+                }}
+            >
+                Start (r)
+            </button>
+        )
+    }
+    if (typeof status === "object") {
+        const { saved, winner } = status
+        const p = players[winner]
+        const text = p?.me ? "You won!" : "You lost!"
+
+        return (
+            <div className="flex flex-col gap-4 items-center justify-center">
+                <p className="text-light-2">{text}</p>
                 <button
                     className="btn"
+                    disabled={!saved}
                     onClick={() => {
-                        onStart?.()
+                        onPlayAgain?.()
                     }}
                 >
-                    Start (r)
+                    Play again (r)
                 </button>
-            )
-        case "game-end":
-            let text = ""
-            if (winner !== undefined) {
-                const p = players[winner]
-                if (p?.me) {
-                    text = "You won!"
-                } else {
-                    text = "You lost!"
-                }
-            }
-
-            return (
-                <div className="flex flex-col gap-4 items-center justify-center">
-                    <p className="text-light-2">{text}</p>
-                    <button
-                        className="btn"
-                        disabled={!saved}
-                        onClick={() => {
-                            onPlayAgain?.()
-                        }}
-                    >
-                        Play again (r)
-                    </button>
-                </div>
-            )
-        case "playing":
-            return <></>
+            </div>
+        )
     }
+
+    return <></>
 }
 
 type Player = {
@@ -175,12 +158,9 @@ function PlayerScore({ singleplayer, connId, players, left }: PlayerScoreProps) 
     )
 }
 
-type GameProps = {
-    singleplayer: boolean
-}
+type PlayersPositions = Record<"left" | "right", number | undefined>
 
-export function Game({ singleplayer }: GameProps) {
-    const canvasElement = useRef<HTMLCanvasElement>(null)
+function useWebsocketConnection(singleplayer: boolean) {
     const connection = useRef<Connection>({} as Connection)
     const [status, setStatus] = useState<GameStatus>("connecting")
     const [connId, setConnId] = useState<number | undefined>(undefined)
@@ -191,24 +171,6 @@ export function Game({ singleplayer }: GameProps) {
         left: undefined,
         right: undefined,
     })
-    const [winner, setWinner] = useState<number | undefined>(undefined)
-    const [saved, setSaved] = useState<boolean>(false)
-
-    useEffect(() => {
-        const canvas = canvasElement.current!
-        const ctx = canvas.getContext("2d")!
-
-        resizeCanvas(canvas, ctx)
-
-        function r() {
-            resizeCanvas(canvas, ctx)
-        }
-
-        window.addEventListener("resize", r)
-        return () => {
-            window.removeEventListener("resize", r)
-        }
-    }, [])
 
     useEffect(() => {
         connection.current = connectToGameServer(singleplayer)
@@ -289,9 +251,7 @@ export function Game({ singleplayer }: GameProps) {
         }
 
         connection.current.onMessageGameEnd = function (winner: number) {
-            setStatus("game-end")
-            setSaved(false)
-            setWinner(winner)
+            setStatus({ status: "game-end", saved: false, winner })
             setPlayers((prev) => {
                 prev[winner].score += 1
                 return { ...prev }
@@ -299,7 +259,13 @@ export function Game({ singleplayer }: GameProps) {
         }
 
         connection.current.onMessageSaved = function () {
-            setSaved(true)
+            setStatus((p) => {
+                if (typeof p === "object") {
+                    p.saved = true
+                    return { ...p }
+                }
+                return p
+            })
         }
 
         return connection.current.close
@@ -333,10 +299,223 @@ export function Game({ singleplayer }: GameProps) {
         }
     }, [players, playersPositions])
 
-    useEffect(() => {
-        const canvas = canvasElement.current!
-        const ctx = canvas.getContext("2d")!
+    return {
+        connection,
+        status,
+        connId,
+        players,
+        playersPositions,
+    }
+}
 
+type GameCanvasProps = {
+    canvasRef: RefObject<HTMLCanvasElement | null>
+}
+
+function GameCanvas({ canvasRef }: GameCanvasProps) {
+    function resizeCanvas(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+
+        const r = canvas.getBoundingClientRect()
+        canvas.width = r.width
+        canvas.height = r.height
+
+        const scaleX = canvas.width / gameWidth
+        const scaleY = canvas.height / gameHeight
+        ctx.scale(scaleX, scaleY)
+    }
+
+    useEffect(() => {
+        function r() {
+            const canvas = canvasRef.current!
+            const ctx = canvas.getContext("2d")!
+            resizeCanvas(canvas, ctx)
+        }
+        r()
+
+        window.addEventListener("resize", r)
+        return () => {
+            window.removeEventListener("resize", r)
+        }
+    }, [])
+
+    return (
+        <canvas
+            ref={canvasRef}
+            className="w-full aspect-[2/1] border-3 border-orange bg-dark-3 crt-scanlines"
+        ></canvas>
+    )
+}
+
+type GameLayoutProps = {
+    singleplayer: boolean
+    playersPositions: PlayersPositions
+    players: Record<number, Player>
+    canvasRef: RefObject<HTMLCanvasElement | null>
+    status: GameStatus
+    sendStartMessage?: () => void
+}
+
+function PortraitLayout({
+    singleplayer,
+    playersPositions,
+    players,
+    canvasRef,
+    status,
+    sendStartMessage,
+}: GameLayoutProps) {
+    return (
+        <div className="pt-10 px-2 sm:px-0 flex flex-col items-center justify-center">
+            <h1 className="text-light-1 text-xl sm:text-4xl font-bold">
+                {singleplayer ? "Singleplayer" : "Multiplayer"}
+            </h1>
+
+            <div className="w-full max-w-[800px] mt-10">
+                <div className="w-full max-w-[800px] flex items-center justify-between">
+                    <PlayerScore
+                        connId={playersPositions.left}
+                        players={players}
+                        singleplayer={singleplayer}
+                        left={true}
+                    />
+                    <PlayerScore
+                        connId={playersPositions.right}
+                        players={players}
+                        singleplayer={singleplayer}
+                        left={false}
+                    />
+                </div>
+
+                <div className="relative w-full max-w-[800px] mt-6 aspect-[2/1] mx-auto canvas-wrapper">
+                    <GameCanvas canvasRef={canvasRef} />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                        <MenuScreen
+                            status={status}
+                            onStart={sendStartMessage}
+                            players={players}
+                            onPlayAgain={sendStartMessage}
+                        />
+                    </div>
+                </div>
+
+                <div className="flex gap-8 items-center w-fit mx-auto mt-6">
+                    <div className="flex flex-col items-center gap-2">
+                        <div className="bg-dark-2 w-fit p-2 rounded">
+                            <svg className="size-4 text-light-2">
+                                <use href="/icons.svg#arrow-up"></use>
+                            </svg>
+                        </div>
+                        <p className="text-xs text-light-2">up</p>
+                    </div>
+                    <div className="flex flex-col items-center gap-2">
+                        <div className="bg-dark-2 w-fit p-2 rounded">
+                            <svg className="size-4 text-light-2 rotate-180">
+                                <use href="/icons.svg#arrow-up"></use>
+                            </svg>
+                        </div>
+                        <p className="text-xs text-light-2">down</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    )
+}
+
+type LandscapeLayoutProps = GameLayoutProps & {
+    sendKeyUp: (keyCode: number) => void
+    sendKeyDown: (keyCode: number) => void
+}
+
+function LandscapeLayout({
+    canvasRef,
+    status,
+    players,
+    sendStartMessage,
+    sendKeyUp,
+    sendKeyDown,
+}: LandscapeLayoutProps) {
+    return (
+        <div className="w-full h-[100vh] grid grid-cols-[15%_1fr_15%] items-center bg-black">
+            <button
+                className="h-full bg-dark-3 text-yellow flex items-center justify-center"
+                onMouseDown={() => sendKeyDown(keyCodeMap["ArrowUp"])}
+                onMouseUp={() => sendKeyUp(keyCodeMap["ArrowUp"])}
+            >
+                UP
+            </button>
+            <div className="relative w-full aspect-[2/1] mx-auto">
+                <GameCanvas canvasRef={canvasRef} />
+                <div className="absolute inset-0 flex items-center justify-center">
+                    <MenuScreen
+                        status={status}
+                        onStart={sendStartMessage}
+                        players={players}
+                        onPlayAgain={sendStartMessage}
+                    />
+                </div>
+            </div>
+            <button
+                className="h-full bg-dark-3 text-yellow flex items-center justify-center"
+                onMouseDown={() => sendKeyDown(keyCodeMap["ArrowDown"])}
+                onMouseUp={() => sendKeyUp(keyCodeMap["ArrowDown"])}
+            >
+                DOWN
+            </button>
+        </div>
+    )
+}
+
+type GameProps = {
+    singleplayer: boolean
+}
+
+export function Game({ singleplayer }: GameProps) {
+    const canvasElement = useRef<HTMLCanvasElement>(null)
+    const { connection, status, connId, players, playersPositions } =
+        useWebsocketConnection(singleplayer)
+    const [landscape, setLandscape] = useState(false)
+
+    useEffect(() => {
+        const landscapeQuery = window.matchMedia("(orientation: landscape) and (max-width: 1024px)")
+        setLandscape(landscapeQuery.matches)
+
+        function onOrientationChange(e: MediaQueryListEvent) {
+            setLandscape(e.matches)
+        }
+
+        landscapeQuery.addEventListener("change", onOrientationChange)
+
+        return () => {
+            landscapeQuery.removeEventListener("change", onOrientationChange)
+        }
+    }, [])
+
+    useEffect(() => {
+        function onKeyUp(event: KeyboardEvent) {
+            console.log(event.key)
+            const k = keyCodeMap[event.key]
+            if (k !== undefined) {
+                connection.current.sendKeyUp(k)
+            }
+        }
+
+        function onKeyDown(event: KeyboardEvent) {
+            const k = keyCodeMap[event.key]
+            if (k !== undefined) {
+                connection.current.sendKeyDown(k)
+            }
+        }
+
+        window.addEventListener("keydown", onKeyDown)
+        window.addEventListener("keyup", onKeyUp)
+
+        return () => {
+            window.removeEventListener("keydown", onKeyDown)
+            window.removeEventListener("keyup", onKeyUp)
+        }
+    }, [])
+
+    useEffect(() => {
         connection.current.onMessageGameState = function (
             paddles: Paddle[],
             ballX: number,
@@ -350,6 +529,9 @@ export function Game({ singleplayer }: GameProps) {
                     me: paddle.connId === connId,
                 })
             }
+
+            const canvas = canvasElement.current!
+            const ctx = canvas.getContext("2d")!
             drawGameState(ctx, paddlesDraw, ballX, ballY)
         }
     }, [connId, playersPositions])
@@ -361,67 +543,38 @@ export function Game({ singleplayer }: GameProps) {
             }
         }
 
-        if (status === "game-start" || (status === "game-end" && saved)) {
+        if (status === "game-start" || typeof status === "object") {
             window.addEventListener("keydown", s)
         }
 
         return () => {
             window.removeEventListener("keydown", s)
         }
-    }, [status, saved])
+    }, [status])
 
     return (
-        <div className="w-full max-w-[800px] mt-10">
-            <div className="w-full max-w-[800px] flex items-center justify-between">
-                <PlayerScore
-                    connId={playersPositions.left}
-                    players={players}
+        <>
+            {landscape ? (
+                <LandscapeLayout
                     singleplayer={singleplayer}
-                    left={true}
-                />
-                <PlayerScore
-                    connId={playersPositions.right}
+                    playersPositions={playersPositions}
                     players={players}
-                    singleplayer={singleplayer}
-                    left={false}
+                    canvasRef={canvasElement}
+                    status={status}
+                    sendStartMessage={connection.current?.sendStartMessage}
+                    sendKeyUp={connection.current.sendKeyUp}
+                    sendKeyDown={connection.current.sendKeyDown}
                 />
-            </div>
-
-            <div className="relative w-full max-w-[800px] mt-6 aspect-[2/1] mx-auto canvas-wrapper">
-                <canvas
-                    ref={canvasElement}
-                    className="w-full aspect-[2/1] border-3 border-orange bg-dark-3 crt-scanlines"
-                ></canvas>
-                <div className="absolute inset-0 flex items-center justify-center">
-                    <MenuScreen
-                        status={status}
-                        onStart={connection.current?.sendStartMessage}
-                        winner={winner}
-                        players={players}
-                        onPlayAgain={connection.current?.sendStartMessage}
-                        saved={saved}
-                    />
-                </div>
-            </div>
-
-            <div className="flex gap-8 items-center w-fit mx-auto mt-6">
-                <div className="flex flex-col items-center gap-2">
-                    <div className="bg-dark-2 w-fit p-2 rounded">
-                        <svg className="size-4 text-light-2">
-                            <use href="/icons.svg#arrow-up"></use>
-                        </svg>
-                    </div>
-                    <p className="text-xs text-light-2">up</p>
-                </div>
-                <div className="flex flex-col items-center gap-2">
-                    <div className="bg-dark-2 w-fit p-2 rounded">
-                        <svg className="size-4 text-light-2 rotate-180">
-                            <use href="/icons.svg#arrow-up"></use>
-                        </svg>
-                    </div>
-                    <p className="text-xs text-light-2">down</p>
-                </div>
-            </div>
-        </div>
+            ) : (
+                <PortraitLayout
+                    singleplayer={singleplayer}
+                    playersPositions={playersPositions}
+                    players={players}
+                    canvasRef={canvasElement}
+                    status={status}
+                    sendStartMessage={connection.current?.sendStartMessage}
+                />
+            )}
+        </>
     )
 }

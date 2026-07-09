@@ -4,8 +4,5 @@ import { Game } from "../components/Game.tsx"
 ---
 
 <Layout>
-    <div class="pt-[10%] px-5 sm:px-0 flex flex-col items-center justify-center">
-        <h1 class="text-light-1 text-xl sm:text-4xl font-bold">Multiplayer</h1>
-        <Game client:load singleplayer={false} />
-    </div>
+    <Game client:load singleplayer={false} />
 </Layout>

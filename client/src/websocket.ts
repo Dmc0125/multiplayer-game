@@ -17,7 +17,7 @@ const MESSAGE_TYPE_SAVED = 8
 const MESSAGE_TYPE_KEY = 100
 const MESSAGE_TYPE_START = 101
 
-const keyCodeMap: Record<string, number> = {
+export const keyCodeMap: Record<string, number> = {
     ArrowUp: 0,
     ArrowDown: 1,
     " ": 2,
@@ -39,7 +39,8 @@ export type Paddle = {
 
 export type Connection = {
     sendStartMessage: () => void
-    sendPauseMessage: () => void
+    sendKeyDown: (keyCode: number) => void
+    sendKeyUp: (keyCode: number) => void
     close: () => void
     onMessageLobbyState?: (myConnId: number, otherConnId: number | undefined) => void
     onMessageJoined?: (connId: number) => void
@@ -52,43 +53,36 @@ export type Connection = {
 }
 
 export function connectToGameServer(singleplayer: boolean) {
-    const connection = {} as Connection
-
     const ws = new WebSocket(`${WEBSOCKET_URL}?${singleplayer ? "singleplayer=1" : ""}`)
     ws.binaryType = "arraybuffer"
 
-    connection.close = () => {
+    function close() {
         ws.close()
     }
 
-    connection.sendStartMessage = function () {
+    function sendStartMessage() {
         if (ws.readyState === ws.OPEN) {
             ws.send(new Uint8Array([MESSAGE_TYPE_START]))
         }
     }
 
-    function windowKeyDown(event: KeyboardEvent) {
-        const keyCode = keyCodeMap[event.key]
-        if (keyCode !== undefined) {
+    function sendKeyDown(keyCode: number) {
+        if (ws.readyState === ws.OPEN) {
             ws.send(encodeKeyMsg(keyCode, true))
         }
     }
 
-    function windowKeyUp(event: KeyboardEvent) {
-        const keyCode = keyCodeMap[event.key]
-        if (keyCode !== undefined) {
+    function sendKeyUp(keyCode: number) {
+        if (ws.readyState === ws.OPEN) {
             ws.send(encodeKeyMsg(keyCode, false))
         }
     }
 
-    ws.onopen = function () {
-        window.addEventListener("keydown", windowKeyDown)
-        window.addEventListener("keyup", windowKeyUp)
-    }
-
-    ws.onclose = function () {
-        window.removeEventListener("keydown", windowKeyDown)
-        window.removeEventListener("keyup", windowKeyUp)
+    const connection: Connection = {
+        sendStartMessage,
+        sendKeyDown,
+        sendKeyUp,
+        close,
     }
 
     ws.onmessage = function (event) {
