@@ -3,7 +3,6 @@ if (import.meta.env.MODE === "production") {
     const [_, domain] = import.meta.env.SITE.split("https")
     WEBSOCKET_URL = `wss${domain}/api/game`
 }
-console.log(import.meta.env)
 
 const MESSAGE_TYPE_JOINED = 0
 const MESSAGE_TYPE_FULL = 1

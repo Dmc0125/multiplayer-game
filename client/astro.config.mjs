@@ -3,14 +3,17 @@ import tailwindcss from "@tailwindcss/vite"
 import react from "@astrojs/react"
 import node from "@astrojs/node"
 
-// https://astro.build/config
+// NOTE: for some reason with vite@7 pnpm dev does not work if ssr.noExternal is set to true or defined at all
+const ssr = {}
+if (process.argv.length > 2 && process.argv[2] == "build") {
+    ssr.noExternal = true
+}
+
 export default defineConfig({
     adapter: node({ mode: "standalone" }),
     vite: {
         plugins: [tailwindcss()],
-        ssr: {
-            noExternal: true,
-        },
+        ssr,
     },
     site: "https://paddle.dmnk.app",
     integrations: [react()],
