@@ -1,5 +1,12 @@
 #!/bin/bash
 
+domain=$1
+
+if [ -z "$domain" ]; then
+    echo "Usage: $0 <domain>"
+    exit 1
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -16,13 +23,6 @@ success() {
 }
 
 set -euo pipefail
-
-info "Setting up deploy user"
-
-if ! id -u deploy &>/dev/null; then
-    useradd -m -s /bin/bash deploy
-    rsync --archive --chown=deploy:deploy ~/.ssh /home/deploy/.ssh
-fi
 
 info "Setting up app directory"
 
@@ -105,11 +105,60 @@ EnvironmentFile=$app_dir/shared/client.env
 WantedBy=multi-user.target
 EOF
 
+info "Setting up nginx"
+
+cat > /etc/nginx/sites-available/$domain <<EOF
+server {
+        listen 80;
+        server_name $domain;
+
+        return 301 https://\$host\$request_uri;
+}
+
+server {
+        listen 443 ssl;
+        server_name $domain;
+
+        ssl_certificate /etc/ssl/cloudflare/paddle.crt;
+        ssl_certificate_key /etc/ssl/cloudflare/paddle.key;
+
+        access_log /var/log/nginx/paddle_access.log;
+        error_log /var/log/nginx/paddle_error.log warn;
+
+        add_header X-Content-Type-Options nosniff;
+        add_header X-Frame-Options SAMEORIGIN;
+        add_header Referrer-Policy strict-origin-when-cross-origin;
+
+        location /api {
+                proxy_pass         http://localhost:8080;
+                proxy_http_version 1.1;
+                proxy_set_header   Host              \$host;
+                proxy_set_header   X-Real-IP         \$remote_addr;
+                proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+                proxy_set_header   X-Forwarded-Proto https;
+                proxy_set_header   Upgrade           \$http_upgrade;
+                proxy_set_header   Connection        'upgrade';
+        }
+
+        location / {
+                proxy_pass         http://localhost:4321;
+                proxy_http_version 1.1;
+                proxy_set_header   Host              \$host;
+                proxy_set_header   X-Real-IP         \$remote_addr;
+                proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+                proxy_set_header   X-Forwarded-Proto https;
+        }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/$domain /etc/nginx/sites-enabled/$domain
+
 info "Enabling services"
 
 systemctl daemon-reload
 systemctl enable paddle-game.server
 systemctl enable paddle-game.client
+systemctl reload nginx
 
 cat > /etc/sudoers.d/deploy <<EOF
 deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart paddle-game.server
@@ -117,4 +166,24 @@ deploy ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart paddle-game.client
 EOF
 
 success "Setup complete! Now place your .env in $app_dir/shared/server.env and $app_dir/shared/client.env"
+echo ""
+echo "
+==> Nginx
+
+Nginx access logs are in /var/log/nginx/paddle_access.log
+Nginx error logs are in /var/log/nginx/paddle_error.log
+
+==> Next steps:
+
+Create an origin server certificate on cloudflare and create these files:
+    => /etc/ssl/cloudflare/paddle.crt - contains the certificate
+    => /etc/ssl/cloudflare/paddle.key - contains the private key
+
+Place env variables in:
+    => /opt/paddle-game/shared/server.env - example in server/example.env
+    => /opt/paddle-game/shared/client.env - example in client/example.env
+"
+
+
+
 
