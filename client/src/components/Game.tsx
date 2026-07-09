@@ -438,8 +438,16 @@ function LandscapeLayout({
         <div className="w-full h-[100vh] grid grid-cols-[15%_1fr_15%] items-center bg-black">
             <button
                 className="h-full bg-dark-3 text-yellow flex items-center justify-center"
-                onMouseDown={() => sendKeyDown(keyCodeMap["ArrowUp"])}
+                onMouseDown={() => {
+                    sendKeyDown(keyCodeMap["ArrowUp"])
+                }}
                 onMouseUp={() => sendKeyUp(keyCodeMap["ArrowUp"])}
+                onTouchStart={() => {
+                    sendKeyDown(keyCodeMap["ArrowUp"])
+                }}
+                onTouchEnd={() => {
+                    sendKeyUp(keyCodeMap["ArrowUp"])
+                }}
             >
                 UP
             </button>
@@ -458,6 +466,12 @@ function LandscapeLayout({
                 className="h-full bg-dark-3 text-yellow flex items-center justify-center"
                 onMouseDown={() => sendKeyDown(keyCodeMap["ArrowDown"])}
                 onMouseUp={() => sendKeyUp(keyCodeMap["ArrowDown"])}
+                onTouchStart={() => {
+                    sendKeyDown(keyCodeMap["ArrowDown"])
+                }}
+                onTouchEnd={() => {
+                    sendKeyUp(keyCodeMap["ArrowDown"])
+                }}
             >
                 DOWN
             </button>
@@ -492,7 +506,6 @@ export function Game({ singleplayer }: GameProps) {
 
     useEffect(() => {
         function onKeyUp(event: KeyboardEvent) {
-            console.log(event.key)
             const k = keyCodeMap[event.key]
             if (k !== undefined) {
                 connection.current.sendKeyUp(k)
