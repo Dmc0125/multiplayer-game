@@ -9,11 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"maps"
 	"math/rand"
 	"net"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -22,6 +26,22 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
+
+func getRequestIp(r *http.Request) string {
+	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+		return ip
+	}
+
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return strings.Split(xff, ",")[0]
+	}
+
+	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+		return xrip
+	}
+
+	return r.RemoteAddr
+}
 
 type logResponseWriter struct {
 	http.ResponseWriter
@@ -60,7 +80,7 @@ func logRequest(next http.Handler) http.Handler {
 			"request_id", rid,
 			"method", r.Method,
 			"path", r.URL.Path,
-			"remote_addr", r.RemoteAddr,
+			"remote_addr", getRequestIp(r),
 			"user_agent", r.UserAgent(),
 		)
 		next.ServeHTTP(rw, r.WithContext(ctx))
@@ -131,7 +151,49 @@ func createSessionCookie(w http.ResponseWriter, value, domain string, prod bool,
 
 var authConfig *oauth2.Config
 
-func authHandler(dbConn *pgx.Conn, clientRedirectUrl, oauthState string) func(w http.ResponseWriter, r *http.Request) {
+type StateStore struct {
+	states map[string]time.Time
+	lock   sync.Mutex
+}
+
+func NewStateStore() *StateStore {
+	return &StateStore{
+		states: make(map[string]time.Time),
+	}
+}
+
+func (s *StateStore) New() string {
+	stateBytes := make([]byte, 32)
+	crypto.Read(stateBytes)
+	state := hex.EncodeToString(stateBytes)
+
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	s.states[state] = time.Now().Add(time.Minute * 10)
+	return state
+}
+
+func (s *StateStore) Validate(state string) bool {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	_, ok := s.states[state]
+	delete(s.states, state)
+
+	// delete expired states
+	n := time.Now()
+	for k := range maps.Keys(s.states) {
+		v := s.states[k]
+		if n.After(v) {
+			delete(s.states, k)
+		}
+	}
+
+	return ok
+}
+
+func authHandler(dbConn *pgx.Conn, states *StateStore, clientRedirectUrl string) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_, status := getUserIdFromSession(dbConn, r)
 		switch status {
@@ -143,13 +205,13 @@ func authHandler(dbConn *pgx.Conn, clientRedirectUrl, oauthState string) func(w 
 			http.Error(w, "Error: unable to get user id", status)
 		default:
 			logReqInfo(r, "redirecting to auth")
-			url := authConfig.AuthCodeURL(oauthState)
+			url := authConfig.AuthCodeURL(states.New())
 			http.Redirect(http.ResponseWriter(w), r, url, http.StatusFound)
 		}
 	}
 }
 
-func callbackHandler(dbConn *pgx.Conn, clientRedirectUrl, oauthState, domain string, prod bool) func(w http.ResponseWriter, r *http.Request) {
+func callbackHandler(dbConn *pgx.Conn, states *StateStore, clientRedirectUrl, domain string, prod bool) func(w http.ResponseWriter, r *http.Request) {
 	prefixes := []string{"Paddle", "Smash", "Spin", "Turbo", "Bouncy", "Rally", "Woosh", "Bloop", "Slap", "Bonk", "Zippy", "Twirl", "Whack", "Speedy", "Smashy", "Zappy", "Wiggly", "Floppy", "Boomy", "Pong"}
 	suffixes := []string{"Paddle", "Smasher", "Spinner", "Bopper", "Whacker", "Bonker", "Rallyer", "Lobber", "Dinker", "Slapper", "Banger", "Pinger", "Swoosher", "Topspin", "Dropshot", "Volley", "Dasher", "Popper", "Zipper", "Ace"}
 
@@ -162,7 +224,7 @@ func callbackHandler(dbConn *pgx.Conn, clientRedirectUrl, oauthState, domain str
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		state := r.URL.Query().Get("state")
-		if state != oauthState {
+		if !states.Validate(state) {
 			logReqInfo(r, "invalid state", "state", state)
 			http.Error(w, "Error: invalid state", http.StatusBadRequest)
 			return
@@ -687,6 +749,8 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 			args := []any{}
 
 			if lobby.singleplayer {
+				args = append(args, "lobby_deleted", true)
+
 				lobby.stopChan <- struct{}{}
 				lobbies[lobbyIdx] = nil
 			} else {
@@ -753,7 +817,35 @@ func loadEnvVariable(key string, required bool) (value string) {
 func main() {
 	const PORT = ":8080"
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	var logFileLocation string
+
+	args := os.Args[1:]
+	if len(args) > 0 {
+		for i := 0; i < len(args); i += 2 {
+			if len(args) <= i+1 {
+				break
+			}
+
+			k, v := args[i], args[i+1]
+			switch k {
+			case "--log-file":
+				logFileLocation = v
+			}
+		}
+	}
+
+	var logWriter io.Writer
+	if logFileLocation != "" {
+		f, err := os.OpenFile(logFileLocation, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+		if err != nil {
+			panic(fmt.Sprintf("Error: unable to open log file %s: %s", logFileLocation, err))
+		}
+		logWriter = f
+	} else {
+		logWriter = os.Stdout
+	}
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{
 		Level:     slog.LevelDebug,
 		AddSource: true,
 	})))
@@ -795,11 +887,11 @@ func main() {
 	slog.Info("loaded auth config", "redirect_url", authConfig.RedirectURL)
 
 	clientRedirectUrl := loadEnvVariable("CLIENT_REDIRECT_URL", true)
-	oauthState := loadEnvVariable("OAUTH_STATE", true)
+	states := NewStateStore()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/auth", authHandler(dbConn, clientRedirectUrl, oauthState))
-	mux.HandleFunc("/api/callback", callbackHandler(dbConn, clientRedirectUrl, oauthState, domain, prod))
+	mux.HandleFunc("/api/auth", authHandler(dbConn, states, clientRedirectUrl))
+	mux.HandleFunc("/api/callback", callbackHandler(dbConn, states, clientRedirectUrl, domain, prod))
 	mux.HandleFunc("/api/logout", authLogoutHandler(dbConn, clientRedirectUrl, domain, prod))
 	mux.HandleFunc("/api/game", gameHandler(dbConn))
 

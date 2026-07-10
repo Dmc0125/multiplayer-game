@@ -29,7 +29,7 @@ info "Setting up app directory"
 app_dir="/opt/paddle-game"
 
 if [ ! -d $app_dir ]; then
-    mkdir -p $app_dir/{releases,current,shared}
+    mkdir -p $app_dir/{releases,current,shared,logs}
     chown -R deploy:deploy $app_dir
 fi
 
@@ -50,17 +50,20 @@ services:
       - ./data:/var/lib/postgresql/data
 EOF
 
-cd $app_dir
-docker compose up -d &> /dev/null
-retries=0
-while ! docker compose ps | grep -q "paddle-db.*Up"; do
-    sleep 1
-    retries=$((retries + 1))
-    if [ $retries -gt 10 ]; then
-        echo "${RED}✗ Error:${RESET} Timed out waiting for postgres to start"
-        exit 1
-    fi
-done
+# do not run docker compose if it is already running
+if ! docker compose ps | grep -q "paddle-db.*Up"; then
+    cd $app_dir
+    docker compose up -d &> /dev/null
+    retries=0
+    while ! docker compose ps | grep -q "paddle-db.*Up"; do
+        sleep 1
+        retries=$((retries + 1))
+        if [ $retries -gt 10 ]; then
+            echo "${RED}✗ Error:${RESET} Timed out waiting for postgres to start"
+            exit 1
+        fi
+    done
+fi
 
 success "Postgres started"
 info "Setting up server service"
@@ -75,7 +78,7 @@ Requires=docker.service
 Type=simple
 User=deploy
 WorkingDirectory=$app_dir
-ExecStart=$app_dir/current/server
+ExecStart=$app_dir/current/server --log-file $app_dir/logs/server.log
 Restart=always
 RestartSec=3
 EnvironmentFile=$app_dir/shared/server.env
@@ -108,6 +111,8 @@ EOF
 info "Setting up nginx"
 
 cat > /etc/nginx/sites-available/$domain <<EOF
+limit_req_zone \$binary_remote_addr zone=server:10m rate=10r/s;
+
 server {
         listen 80;
         server_name $domain;
@@ -130,6 +135,8 @@ server {
         add_header Referrer-Policy strict-origin-when-cross-origin;
 
         location /api {
+                limit_req zone=server burst=10 nodelay;
+
                 proxy_pass         http://localhost:8080;
                 proxy_http_version 1.1;
                 proxy_set_header   Host              \$host;
@@ -141,6 +148,8 @@ server {
         }
 
         location / {
+                limit_req zone=server burst=10 nodelay;
+
                 proxy_pass         http://localhost:4321;
                 proxy_http_version 1.1;
                 proxy_set_header   Host              \$host;
