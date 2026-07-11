@@ -7,18 +7,19 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/coder/websocket"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type ConnId uint32
 
 var nextConnId = func() func() ConnId {
-	c := 0
+	var c atomic.Uint32
 	return func() ConnId {
-		c++
-		return ConnId(c)
+		return ConnId(c.Add(1))
 	}
 }()
 
@@ -75,7 +76,17 @@ type LobbyMessage struct {
 	data    []byte
 }
 
+type PlayerJoinMessage struct {
+	ctx            context.Context
+	connId         ConnId
+	conn           *websocket.Conn
+	userId         int
+	sendLobbyState bool
+	sendJoin       bool
+}
+
 type LobbyPlayer struct {
+	ctx    context.Context
 	conn   *websocket.Conn
 	userId int
 	ready  bool
@@ -83,21 +94,25 @@ type LobbyPlayer struct {
 }
 
 type GameLobby struct {
-	index        int
-	singleplayer bool
-	messageChan  chan LobbyMessage
-	stopChan     chan struct{}
-	leaveChan    chan ConnId
-	players      map[ConnId]*LobbyPlayer
-	game         GameState
+	index          int
+	singleplayer   bool
+	messageChan    chan LobbyMessage
+	playerJoinChan chan PlayerJoinMessage
+	stopChan       chan struct{}
+	leaveChan      chan ConnId
+	players        map[ConnId]*LobbyPlayer
+	game           GameState
 }
 
-func (gl *GameLobby) addPlayer(conn *websocket.Conn, connId ConnId, userId int) {
-	gl.players[connId] = &LobbyPlayer{
-		conn:   conn,
-		userId: userId,
-		ready:  false,
-		left:   len(gl.players) == 0,
+func newGameLobby(index int, singleplayer bool) *GameLobby {
+	return &GameLobby{
+		index:          index,
+		singleplayer:   singleplayer,
+		messageChan:    make(chan LobbyMessage),
+		stopChan:       make(chan struct{}),
+		leaveChan:      make(chan ConnId),
+		playerJoinChan: make(chan PlayerJoinMessage),
+		players:        make(map[ConnId]*LobbyPlayer),
 	}
 }
 
@@ -109,18 +124,55 @@ func (gl *GameLobby) broadcast(msgType MessageType, data []byte) {
 
 	for _, p := range gl.players {
 		if p.conn != nil {
-			p.conn.Write(context.Background(), websocket.MessageBinary, d)
+			p.conn.Write(p.ctx, websocket.MessageBinary, d)
 		}
 	}
 }
 
-func (gl *GameLobby) start(dbConn *pgx.Conn) {
+func (gl *GameLobby) start(dbConn *pgxpool.Pool) {
 	for {
 		select {
+		case m := <-gl.playerJoinChan:
+			if m.sendLobbyState {
+				d := binary.LittleEndian.AppendUint32([]byte{MessageTypeLobbyState}, uint32(m.connId))
+				for pcid, p := range gl.players {
+					if p.conn != nil {
+						d = binary.LittleEndian.AppendUint32(d, uint32(pcid))
+					}
+				}
+				if err := m.conn.Write(m.ctx, websocket.MessageBinary, d); err != nil {
+					slog.Error("unable to send message", "error", err)
+					return
+				}
+			}
+
+			if m.sendJoin {
+				d := []byte{byte(MessageTypePlayerJoined)}
+				d = binary.LittleEndian.AppendUint32(d, uint32(m.connId))
+				for _, p := range gl.players {
+					if p.conn != nil {
+						if err := p.conn.Write(m.ctx, websocket.MessageBinary, d); err != nil {
+							// unable to send message means the player disconnected, which should alreade by handled
+							slog.Error("unable to send message", "error", err)
+							return
+						}
+					}
+				}
+			}
+
+			gl.players[m.connId] = &LobbyPlayer{
+				ctx:    m.ctx,
+				conn:   m.conn,
+				userId: m.userId,
+				ready:  false,
+				left:   len(gl.players) == 0,
+			}
 		case <-gl.stopChan:
 			return
 		case cid := <-gl.leaveChan:
-			gl.players[cid] = nil
+			gl.game.status = GameStatusNone
+			delete(gl.players, cid)
+			gl.broadcast(MessageTypePlayerLeft, nil)
 		case lm := <-gl.messageChan:
 			switch lm.msgType {
 			case MessageTypeKey:
@@ -267,14 +319,7 @@ func (l *Lobbies) findFree(singleplayer bool) (lobby *GameLobby) {
 	var idx int
 	for idx, lobby = range l.lobbies {
 		if lobby == nil {
-			l.lobbies[idx] = &GameLobby{
-				index:        idx,
-				singleplayer: singleplayer,
-				messageChan:  make(chan LobbyMessage),
-				stopChan:     make(chan struct{}),
-				leaveChan:    make(chan ConnId),
-				players:      make(map[ConnId]*LobbyPlayer),
-			}
+			l.lobbies[idx] = newGameLobby(idx, singleplayer)
 			lobby = l.lobbies[idx]
 			l.used += 1
 			l.free -= 1
@@ -304,7 +349,7 @@ func (l *Lobbies) freeLobby(lobby *GameLobby, playerLeftConnId ConnId) {
 	}
 }
 
-func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) {
+func gameHandler(dbConn *pgxpool.Pool) func(w http.ResponseWriter, r *http.Request) {
 	lobbies := newLobbies()
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -338,59 +383,33 @@ func gameHandler(dbConn *pgx.Conn) func(w http.ResponseWriter, r *http.Request) 
 				logReqError(r, "unable to send message", "error", err)
 				return
 			}
+			return
 		}
 
 		if singleplayer {
-			lobby.addPlayer(nil, nextConnId(), -1)
-			lobby.addPlayer(conn, connId, userId)
-
-			// send lobby state
-			d := binary.LittleEndian.AppendUint32([]byte{MessageTypeLobbyState}, uint32(connId))
-			for pcid, p := range lobby.players {
-				if p.conn == nil {
-					d = binary.LittleEndian.AppendUint32(d, uint32(pcid))
-				}
-			}
-			if err := conn.Write(r.Context(), websocket.MessageBinary, d); err != nil {
-				logReqError(r, "unable to send message", "error", err)
-				return
-			}
-
+			logReqInfo(r, "starting singleplayer game", "user_id", userId)
 			go lobby.start(dbConn)
+
+			lobby.playerJoinChan <- PlayerJoinMessage{ctx: r.Context(), connId: nextConnId(), userId: -1}
+			lobby.playerJoinChan <- PlayerJoinMessage{ctx: r.Context(), conn: conn, connId: connId, userId: userId, sendLobbyState: true}
 		} else {
-			lobbyState := []byte{byte(MessageTypeLobbyState)}
-			lobbyState = binary.LittleEndian.AppendUint32(nil, uint32(connId))
+			m := PlayerJoinMessage{
+				ctx:            r.Context(),
+				conn:           conn,
+				connId:         connId,
+				userId:         userId,
+				sendLobbyState: true,
+				sendJoin:       true,
+			}
 
 			if len(lobby.players) == 1 {
 				// 1 player
-				for pcid := range lobby.players {
-					binary.LittleEndian.AppendUint32(lobbyState, uint32(pcid))
-				}
-
-				lobby.addPlayer(conn, connId, userId)
+				lobby.playerJoinChan <- m
 			} else {
 				// 0 players
-				lobby.addPlayer(conn, connId, userId)
 				go lobby.start(dbConn)
-			}
-
-			// send lobby state to new player
-			if err := conn.Write(r.Context(), websocket.MessageBinary, lobbyState); err != nil {
-				logReqError(r, "unable to send message", "error", err)
-				return
-			}
-
-			{ // send player joind message
-				for pcid, p := range lobby.players {
-					if pcid != connId {
-						d := []byte{byte(MessageTypePlayerJoined)}
-						d = binary.LittleEndian.AppendUint32(d, uint32(connId))
-						if err := p.conn.Write(r.Context(), websocket.MessageBinary, d); err != nil {
-							logReqError(r, "unable to send message", "error", err)
-							return
-						}
-					}
-				}
+				m.sendJoin = false
+				lobby.playerJoinChan <- m
 			}
 		}
 

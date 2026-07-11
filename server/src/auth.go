@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/oauth2"
 )
 
@@ -77,7 +78,7 @@ func createSessionCookie(w http.ResponseWriter, value, domain string, prod bool,
 	http.SetCookie(w, &c)
 }
 
-func authHandler(dbConn *pgx.Conn, states *StateStore, clientRedirectUrl string) func(w http.ResponseWriter, r *http.Request) {
+func authHandler(dbConn *pgxpool.Pool, states *StateStore, clientRedirectUrl string) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_, status := getUserIdFromSession(dbConn, r)
 		switch status {
@@ -95,7 +96,7 @@ func authHandler(dbConn *pgx.Conn, states *StateStore, clientRedirectUrl string)
 	}
 }
 
-func callbackHandler(dbConn *pgx.Conn, states *StateStore, clientRedirectUrl, domain string, prod bool) func(w http.ResponseWriter, r *http.Request) {
+func callbackHandler(dbConn *pgxpool.Pool, states *StateStore, clientRedirectUrl, domain string, prod bool) func(w http.ResponseWriter, r *http.Request) {
 	prefixes := []string{"Paddle", "Smash", "Spin", "Turbo", "Bouncy", "Rally", "Woosh", "Bloop", "Slap", "Bonk", "Zippy", "Twirl", "Whack", "Speedy", "Smashy", "Zappy", "Wiggly", "Floppy", "Boomy", "Pong"}
 	suffixes := []string{"Paddle", "Smasher", "Spinner", "Bopper", "Whacker", "Bonker", "Rallyer", "Lobber", "Dinker", "Slapper", "Banger", "Pinger", "Swoosher", "Topspin", "Dropshot", "Volley", "Dasher", "Popper", "Zipper", "Ace"}
 
@@ -250,7 +251,7 @@ func callbackHandler(dbConn *pgx.Conn, states *StateStore, clientRedirectUrl, do
 	}
 }
 
-func authLogoutHandler(dbConn *pgx.Conn, clientRedirectUrl, domain string, prod bool) func(w http.ResponseWriter, r *http.Request) {
+func authLogoutHandler(dbConn *pgxpool.Pool, clientRedirectUrl, domain string, prod bool) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionId, _ := r.Cookie("session_id")
 		if sessionId != nil {

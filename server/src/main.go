@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -91,7 +92,7 @@ func getRequestId(r *http.Request) string {
 	return r.Context().Value("requestId").(string)
 }
 
-func getUserIdFromSession(dbConn *pgx.Conn, r *http.Request) (userId int, status int) {
+func getUserIdFromSession(dbConn *pgxpool.Pool, r *http.Request) (userId int, status int) {
 	sessionId, _ := r.Cookie("session_id")
 	if sessionId == nil {
 		status = http.StatusUnauthorized
@@ -182,7 +183,7 @@ func main() {
 		loadEnvVariable("DB_PORT", true),
 		loadEnvVariable("DB", true),
 	)
-	dbConn, err := pgx.Connect(context.Background(), dbUrl)
+	dbConn, err := pgxpool.New(context.Background(), dbUrl)
 	if err != nil {
 		slog.Error("unable to connect to db", "error", err)
 		return

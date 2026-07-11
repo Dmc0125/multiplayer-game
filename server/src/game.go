@@ -21,10 +21,6 @@ const PADDLE_SPEED_PER_SECOND = 200.0
 const BALL_RADIUS = 5.0
 const BALL_SPEED_PER_SECOND = 500.0
 
-type GamePaddle struct {
-	x, y float32
-}
-
 type GameBall struct {
 	x, y   float32
 	vx, vy float32
@@ -56,11 +52,10 @@ const (
 type GameState struct {
 	prevFrameEndTime time.Time
 	dt               float64
-
-	status      GameStatus
-	ball        GameBall
-	playerLeft  GamePlayerState
-	playerRight GamePlayerState
+	status           GameStatus
+	ball             GameBall
+	playerLeft       GamePlayerState
+	playerRight      GamePlayerState
 }
 
 func (gs *GameState) start(players map[ConnId]*LobbyPlayer) {
