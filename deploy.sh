@@ -17,8 +17,8 @@ success() {
 
 set -euo pipefail
 
-project_dir=$1
-server_ip=$2
+project_dir=$(cd $(dirname "${BASH_SOURCE[0]}") && pwd)
+server_ip=$1
 
 if [ -z "$project_dir" ] || [ -z "$server_ip" ]; then
   echo "Usage: $0 <project_dir> <server_ip>"

@@ -135,10 +135,8 @@ func (gl *GameLobby) start(dbConn *pgxpool.Pool) {
 		case m := <-gl.playerJoinChan:
 			if m.sendLobbyState {
 				d := binary.LittleEndian.AppendUint32([]byte{MessageTypeLobbyState}, uint32(m.connId))
-				for pcid, p := range gl.players {
-					if p.conn != nil {
-						d = binary.LittleEndian.AppendUint32(d, uint32(pcid))
-					}
+				for pcid := range gl.players {
+					d = binary.LittleEndian.AppendUint32(d, uint32(pcid))
 				}
 				if err := m.conn.Write(m.ctx, websocket.MessageBinary, d); err != nil {
 					slog.Error("unable to send message", "error", err)
@@ -154,7 +152,6 @@ func (gl *GameLobby) start(dbConn *pgxpool.Pool) {
 						if err := p.conn.Write(m.ctx, websocket.MessageBinary, d); err != nil {
 							// unable to send message means the player disconnected, which should alreade by handled
 							slog.Error("unable to send message", "error", err)
-							return
 						}
 					}
 				}
