@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react"
-import { connectToGameServer, keyCodeMap, type Paddle, type Connection } from "../websocket"
+import { connectToGameServer, keyCodeMap, type Connection } from "../websocket"
 
 export const gameWidth = 800
 export const gameHeight = 400
@@ -54,12 +54,12 @@ type GameStatus =
     | "waiting"
     | "waiting-player-left"
     | "game-start"
-    | { status: "game-end"; saved: boolean; winner: number }
+    | { status: "game-end"; saved: boolean; winnerLeft: boolean }
     | "playing"
 
 type MenuScreenProps = {
     status: GameStatus
-    players: Record<number, Player>
+    players: Players
     onStart: (() => void) | undefined
     onPlayAgain: (() => void) | undefined
 }
@@ -92,8 +92,13 @@ function MenuScreen({ status, players, onStart, onPlayAgain }: MenuScreenProps) 
         )
     }
     if (typeof status === "object") {
-        const { saved, winner } = status
-        const p = players[winner]
+        const { saved, winnerLeft } = status
+        let p: Player
+        if (winnerLeft) {
+            p = players.left!
+        } else {
+            p = players.right!
+        }
         const text = p?.me ? "You won!" : "You lost!"
 
         return (
@@ -123,21 +128,23 @@ type Player = {
 }
 
 type PlayerScoreProps = {
-    connId: number | undefined
-    players: Record<number, Player>
+    players: Players
     singleplayer: boolean
     left: boolean
 }
 
-function PlayerScore({ singleplayer, connId, players, left }: PlayerScoreProps) {
-    let hideCn = connId === undefined ? "opacity-0" : ""
-    let me = false
-    let score = 0
-    let ready = false
-
-    if (connId !== undefined) {
-        ;({ me, score, ready } = players[connId])
+function PlayerScore({ singleplayer, players, left }: PlayerScoreProps) {
+    let p: Player | undefined
+    if (left) {
+        p = players.left
+    } else {
+        p = players.right
     }
+
+    const hideCn = p === undefined ? "opacity-0" : ""
+    const me = p?.me === true
+    const score = p?.score || 0
+    const ready = p?.ready || false
 
     return (
         <div
@@ -158,19 +165,22 @@ function PlayerScore({ singleplayer, connId, players, left }: PlayerScoreProps) 
     )
 }
 
-type PlayersPositions = Record<"left" | "right", number | undefined>
+type Players = Record<"left" | "right", Player | undefined>
 
-function useWebsocketConnection(singleplayer: boolean) {
+type GameConnection = {
+    connection: RefObject<Connection>
+    status: GameStatus
+    connId: number | undefined
+    players: Players
+    latencyMs: number | undefined
+}
+
+function useGameConnection(singleplayer: boolean): GameConnection {
     const connection = useRef<Connection>({} as Connection)
     const [status, setStatus] = useState<GameStatus>("connecting")
     const [connId, setConnId] = useState<number | undefined>(undefined)
-    const [players, setPlayers] = useState<Record<number, Player>>({})
-    const [playersPositions, setPlayersPositions] = useState<
-        Record<"left" | "right", number | undefined>
-    >({
-        left: undefined,
-        right: undefined,
-    })
+    const [players, setPlayers] = useState<Players>({ left: undefined, right: undefined })
+    const [latencyMs, setLatencyMs] = useState<number | undefined>(undefined)
 
     useEffect(() => {
         connection.current = connectToGameServer(singleplayer)
@@ -181,53 +191,41 @@ function useWebsocketConnection(singleplayer: boolean) {
         ) {
             setConnId(myConnId)
 
-            const players: Record<number, Player> = {}
-            players[myConnId] = {
+            const me: Player = {
                 connId: myConnId,
                 me: true,
                 score: 0,
                 ready: false,
             }
+            const newPlayers: Players = { left: undefined, right: undefined }
 
             if (otherConnId !== undefined) {
-                players[otherConnId] = {
+                // I'm right
+                newPlayers.right = me
+                newPlayers.left = {
                     connId: otherConnId,
                     me: false,
                     score: 0,
                     ready: false,
                 }
-                if (singleplayer) {
-                    setPlayersPositions({
-                        left: myConnId,
-                        right: otherConnId,
-                    })
-                } else {
-                    setPlayersPositions({
-                        left: otherConnId,
-                        right: myConnId,
-                    })
-                }
                 setStatus("game-start")
             } else {
-                setPlayersPositions({ left: myConnId, right: undefined })
+                // I'm left
+                newPlayers.left = me
                 setStatus("waiting")
             }
 
-            setPlayers(players)
+            setPlayers(newPlayers)
         }
 
         connection.current.onMessageJoined = function (connId: number) {
-            setPlayers((prev) => ({
-                ...prev,
-                [connId]: {
+            setPlayers((prev) => {
+                prev.right = {
                     connId,
                     me: false,
                     score: 0,
                     ready: false,
-                },
-            }))
-            setPlayersPositions((prev) => {
-                prev.right = connId
+                }
                 return { ...prev }
             })
             setStatus("game-start")
@@ -236,24 +234,31 @@ function useWebsocketConnection(singleplayer: boolean) {
         connection.current.onMessageStarted = function () {
             setStatus("playing")
             setPlayers((prev) => {
-                for (const connId of Object.keys(prev)) {
-                    prev[Number(connId)].ready = false
+                prev.right!.ready = false
+                prev.left!.ready = false
+                return { ...prev }
+            })
+        }
+
+        connection.current.onMessageReady = function (left: boolean) {
+            setPlayers((prev) => {
+                if (left) {
+                    prev.left!.ready = true
+                } else {
+                    prev.right!.ready = true
                 }
                 return { ...prev }
             })
         }
 
-        connection.current.onMessageReady = function (connId: number) {
+        connection.current.onMessageGameEnd = function (winnerLeft: boolean) {
+            setStatus({ status: "game-end", saved: false, winnerLeft })
             setPlayers((prev) => {
-                prev[connId].ready = true
-                return { ...prev }
-            })
-        }
-
-        connection.current.onMessageGameEnd = function (winner: number) {
-            setStatus({ status: "game-end", saved: false, winner })
-            setPlayers((prev) => {
-                prev[winner].score += 1
+                if (winnerLeft) {
+                    prev.left!.score += 1
+                } else {
+                    prev.right!.score += 1
+                }
                 return { ...prev }
             })
         }
@@ -268,43 +273,37 @@ function useWebsocketConnection(singleplayer: boolean) {
             })
         }
 
-        return connection.current.close
-    }, [])
-
-    useEffect(() => {
         connection.current.onMessagePlayerLeft = function () {
-            let connId: number
-            for (const _cid in players) {
-                const cid = Number(_cid)
-                const p = players[cid]
-                if (!p.me) {
-                    connId = cid
-                    break
-                }
-            }
-
             setPlayers((prev) => {
-                delete prev[connId]
-                return { ...prev }
-            })
-            setPlayersPositions((prev) => {
-                if (prev.left === connId) {
-                    prev.left = undefined
-                } else {
+                if (prev.left?.me === true) {
                     prev.right = undefined
+                } else {
+                    prev.left = undefined
                 }
                 return { ...prev }
             })
             setStatus("waiting-player-left")
         }
-    }, [players, playersPositions])
+
+        connection.current.onMessagePong = function (_latencyMs: number) {
+            setLatencyMs(_latencyMs)
+        }
+        const pingInterval = setInterval(() => {
+            connection.current.sendPing()
+        }, 2000)
+
+        return () => {
+            clearInterval(pingInterval)
+            connection.current.close()
+        }
+    }, [])
 
     return {
         connection,
         status,
         connId,
         players,
-        playersPositions,
+        latencyMs,
     }
 }
 
@@ -349,21 +348,13 @@ function GameCanvas({ canvasRef }: GameCanvasProps) {
 
 type GameLayoutProps = {
     singleplayer: boolean
-    playersPositions: PlayersPositions
-    players: Record<number, Player>
     canvasRef: RefObject<HTMLCanvasElement | null>
-    status: GameStatus
-    sendStartMessage?: () => void
+    gameConnection: GameConnection
 }
 
-function PortraitLayout({
-    singleplayer,
-    playersPositions,
-    players,
-    canvasRef,
-    status,
-    sendStartMessage,
-}: GameLayoutProps) {
+function PortraitLayout({ singleplayer, canvasRef, gameConnection }: GameLayoutProps) {
+    const { status, players, latencyMs, connection } = gameConnection
+
     return (
         <div className="pt-10 px-2 sm:px-0 flex flex-col items-center justify-center">
             <h1 className="text-light-1 text-xl sm:text-4xl font-bold">
@@ -372,18 +363,14 @@ function PortraitLayout({
 
             <div className="w-full max-w-[800px] mt-10">
                 <div className="w-full max-w-[800px] flex items-center justify-between">
-                    <PlayerScore
-                        connId={playersPositions.left}
-                        players={players}
-                        singleplayer={singleplayer}
-                        left={true}
-                    />
-                    <PlayerScore
-                        connId={playersPositions.right}
-                        players={players}
-                        singleplayer={singleplayer}
-                        left={false}
-                    />
+                    <PlayerScore players={players} singleplayer={singleplayer} left={true} />
+
+                    <div className="flex flex-col items-center gap-2 text-xs">
+                        <p className="text-yellow">Connected</p>
+                        <p className="text-light-2">Ping {latencyMs}ms</p>
+                    </div>
+
+                    <PlayerScore players={players} singleplayer={singleplayer} left={false} />
                 </div>
 
                 <div className="relative w-full max-w-[800px] mt-6 aspect-[2/1] mx-auto canvas-wrapper">
@@ -391,9 +378,9 @@ function PortraitLayout({
                     <div className="absolute inset-0 flex items-center justify-center">
                         <MenuScreen
                             status={status}
-                            onStart={sendStartMessage}
+                            onStart={connection.current.sendStartMessage}
                             players={players}
-                            onPlayAgain={sendStartMessage}
+                            onPlayAgain={connection.current.sendStartMessage}
                         />
                     </div>
                 </div>
@@ -421,33 +408,18 @@ function PortraitLayout({
     )
 }
 
-type LandscapeLayoutProps = GameLayoutProps & {
-    sendKeyUp: (keyCode: number) => void
-    sendKeyDown: (keyCode: number) => void
-}
+function LandscapeLayout({ canvasRef, gameConnection }: GameLayoutProps) {
+    const { status, players, connection } = gameConnection
+    const { sendKeyUp, sendKeyDown, sendStartMessage } = connection.current
 
-function LandscapeLayout({
-    canvasRef,
-    status,
-    players,
-    sendStartMessage,
-    sendKeyUp,
-    sendKeyDown,
-}: LandscapeLayoutProps) {
     return (
         <div className="w-full h-[100vh] grid grid-cols-[15%_1fr_15%] items-center bg-black">
             <button
                 className="h-full bg-dark-3 text-yellow flex items-center justify-center"
-                onMouseDown={() => {
-                    sendKeyDown(keyCodeMap["ArrowUp"])
-                }}
+                onMouseDown={() => sendKeyDown(keyCodeMap["ArrowUp"])}
                 onMouseUp={() => sendKeyUp(keyCodeMap["ArrowUp"])}
-                onTouchStart={() => {
-                    sendKeyDown(keyCodeMap["ArrowUp"])
-                }}
-                onTouchEnd={() => {
-                    sendKeyUp(keyCodeMap["ArrowUp"])
-                }}
+                onTouchStart={() => sendKeyDown(keyCodeMap["ArrowUp"])}
+                onTouchEnd={() => sendKeyUp(keyCodeMap["ArrowUp"])}
             >
                 UP
             </button>
@@ -466,12 +438,8 @@ function LandscapeLayout({
                 className="h-full bg-dark-3 text-yellow flex items-center justify-center"
                 onMouseDown={() => sendKeyDown(keyCodeMap["ArrowDown"])}
                 onMouseUp={() => sendKeyUp(keyCodeMap["ArrowDown"])}
-                onTouchStart={() => {
-                    sendKeyDown(keyCodeMap["ArrowDown"])
-                }}
-                onTouchEnd={() => {
-                    sendKeyUp(keyCodeMap["ArrowDown"])
-                }}
+                onTouchStart={() => sendKeyDown(keyCodeMap["ArrowDown"])}
+                onTouchEnd={() => sendKeyUp(keyCodeMap["ArrowDown"])}
             >
                 DOWN
             </button>
@@ -485,9 +453,10 @@ type GameProps = {
 
 export function Game({ singleplayer }: GameProps) {
     const canvasElement = useRef<HTMLCanvasElement>(null)
-    const { connection, status, connId, players, playersPositions } =
-        useWebsocketConnection(singleplayer)
+    const gameConnection = useGameConnection(singleplayer)
     const [landscape, setLandscape] = useState(false)
+
+    const { connection, status, players } = gameConnection
 
     useEffect(() => {
         const landscapeQuery = window.matchMedia("(orientation: landscape) and (max-width: 1024px)")
@@ -530,24 +499,28 @@ export function Game({ singleplayer }: GameProps) {
 
     useEffect(() => {
         connection.current.onMessageGameState = function (
-            paddles: Paddle[],
+            paddleLeftY: number,
+            paddleRightY: number,
             ballX: number,
             ballY: number,
         ) {
-            const paddlesDraw: PaddleDraw[] = []
-            for (const paddle of paddles) {
-                paddlesDraw.push({
-                    y: paddle.y,
-                    left: playersPositions.left === paddle.connId,
-                    me: paddle.connId === connId,
-                })
-            }
-
+            const paddlesDraw: PaddleDraw[] = [
+                {
+                    y: paddleLeftY,
+                    left: true,
+                    me: players.left?.me === true,
+                },
+                {
+                    y: paddleRightY,
+                    left: false,
+                    me: players.right?.me === true,
+                },
+            ]
             const canvas = canvasElement.current!
             const ctx = canvas.getContext("2d")!
             drawGameState(ctx, paddlesDraw, ballX, ballY)
         }
-    }, [connId, playersPositions])
+    }, [players])
 
     useEffect(() => {
         function s(event: KeyboardEvent) {
@@ -570,22 +543,14 @@ export function Game({ singleplayer }: GameProps) {
             {landscape ? (
                 <LandscapeLayout
                     singleplayer={singleplayer}
-                    playersPositions={playersPositions}
-                    players={players}
                     canvasRef={canvasElement}
-                    status={status}
-                    sendStartMessage={connection.current?.sendStartMessage}
-                    sendKeyUp={connection.current.sendKeyUp}
-                    sendKeyDown={connection.current.sendKeyDown}
+                    gameConnection={gameConnection}
                 />
             ) : (
                 <PortraitLayout
                     singleplayer={singleplayer}
-                    playersPositions={playersPositions}
-                    players={players}
                     canvasRef={canvasElement}
-                    status={status}
-                    sendStartMessage={connection.current?.sendStartMessage}
+                    gameConnection={gameConnection}
                 />
             )}
         </>

@@ -13,9 +13,11 @@ const MESSAGE_TYPE_READY = 5
 const MESSAGE_TYPE_LOBBY_STATE = 6
 const MESSAGE_TYPE_PLAYER_LEFT = 7
 const MESSAGE_TYPE_SAVED = 8
+const MESSAGE_TYPE_PONG = 9
 
 const MESSAGE_TYPE_KEY = 100
 const MESSAGE_TYPE_START = 101
+const MESSAGE_TYPE_PING = 102
 
 export const keyCodeMap: Record<string, number> = {
     ArrowUp: 0,
@@ -41,15 +43,22 @@ export type Connection = {
     sendStartMessage: () => void
     sendKeyDown: (keyCode: number) => void
     sendKeyUp: (keyCode: number) => void
+    sendPing: () => void
     close: () => void
     onMessageLobbyState?: (myConnId: number, otherConnId: number | undefined) => void
     onMessageJoined?: (connId: number) => void
     onMessagePlayerLeft?: () => void
     onMessageStarted?: () => void
-    onMessageReady?: (connId: number) => void
-    onMessageGameState?: (paddles: Paddle[], ballX: number, ballY: number) => void
-    onMessageGameEnd?: (winner: number) => void
+    onMessageReady?: (left: boolean) => void
+    onMessageGameState?: (
+        paddleLeftY: number,
+        paddleRightY: number,
+        ballX: number,
+        ballY: number,
+    ) => void
+    onMessageGameEnd?: (winnerLeft: boolean) => void
     onMessageSaved?: () => void
+    onMessagePong?: (latencyMs: number) => void
 }
 
 export function connectToGameServer(singleplayer: boolean) {
@@ -78,10 +87,26 @@ export function connectToGameServer(singleplayer: boolean) {
         }
     }
 
+    const pingMessageIds = new Map<number, number>()
+    let pingMessageId = 0
+
+    function sendPing() {
+        if (ws.readyState === ws.OPEN) {
+            pingMessageIds.set(pingMessageId, Date.now())
+
+            const data = new Uint8Array(5)
+            const view = new DataView(data.buffer)
+            view.setUint8(0, MESSAGE_TYPE_PING)
+            view.setUint32(1, pingMessageId, true)
+            ws.send(data)
+        }
+    }
+
     const connection: Connection = {
         sendStartMessage,
         sendKeyDown,
         sendKeyUp,
+        sendPing,
         close,
     }
 
@@ -95,6 +120,18 @@ export function connectToGameServer(singleplayer: boolean) {
         const messageType = view.getUint8(0)
 
         switch (messageType) {
+            case MESSAGE_TYPE_PONG: {
+                const messageId = view.getUint32(1, true)
+                const sentAt = pingMessageIds.get(messageId)
+
+                if (sentAt) {
+                    const latencyMs = Date.now() - sentAt
+                    connection.onMessagePong?.(latencyMs)
+                    pingMessageIds.delete(messageId)
+                }
+
+                break
+            }
             case MESSAGE_TYPE_LOBBY_STATE: {
                 const myConnId = view.getUint32(1, true)
                 let otherConnId: number | undefined
@@ -118,8 +155,6 @@ export function connectToGameServer(singleplayer: boolean) {
             }
             case MESSAGE_TYPE_GAME_STATE: {
                 const view = new DataView(data)
-                const paddles: Paddle[] = []
-
                 let offset = 1
                 function decodef32(): number {
                     const f = view.getFloat32(offset, true)
@@ -127,33 +162,24 @@ export function connectToGameServer(singleplayer: boolean) {
                     return f
                 }
 
-                for (let i = 0; i < 2; i++) {
-                    const c = view.getUint32(offset, true)
-                    offset += 4
-
-                    const paddleY = decodef32()
-                    paddles.push({
-                        connId: c,
-                        y: paddleY,
-                    })
-                }
-
+                const paddleLeftY = decodef32()
+                const paddleRightY = decodef32()
                 const ballX = decodef32()
                 const ballY = decodef32()
 
-                connection.onMessageGameState?.(paddles, ballX, ballY)
+                connection.onMessageGameState?.(paddleLeftY, paddleRightY, ballX, ballY)
                 break
             }
             case MESSAGE_TYPE_GAME_END: {
                 const view = new DataView(data)
-                const winner = view.getUint32(1, true)
-                connection.onMessageGameEnd?.(winner)
+                const winner = view.getUint8(1)
+                connection.onMessageGameEnd?.(winner === 1)
                 break
             }
             case MESSAGE_TYPE_READY: {
                 const view = new DataView(data)
-                const connId = view.getUint32(1, true)
-                connection.onMessageReady?.(connId)
+                const left = view.getUint8(1)
+                connection.onMessageReady?.(left === 1)
                 break
             }
             case MESSAGE_TYPE_SAVED: {
