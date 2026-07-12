@@ -98,7 +98,8 @@ func TestSingleplayerLifecycle(t *testing.T) {
 
 	{
 		log.Println("[SINGLEPLAYER] send start, should receive ready and then started")
-		client.send(MessageTypeStart, nil, defaultTimeout)
+		err := client.send(MessageTypeStart, nil, defaultTimeout)
+		require.NoError(t, err)
 
 		msgType, data, err := client.read(defaultTimeout)
 		require.NoError(t, err)
@@ -182,7 +183,8 @@ func TestMultiPlayerLifecycle(t *testing.T) {
 
 	{
 		log.Println("[MULTIPLAYER] c1 send start, both should receive ready")
-		c1.send(MessageTypeStart, nil, defaultTimeout)
+		err := c1.send(MessageTypeStart, nil, defaultTimeout)
+		require.NoError(t, err)
 
 		msgType, data, err := c1.read(defaultTimeout)
 		require.NoError(t, err)
@@ -197,7 +199,8 @@ func TestMultiPlayerLifecycle(t *testing.T) {
 
 	{
 		log.Println("[MULTIPLAYER] c2 send start, both should receive ready")
-		c2.send(MessageTypeStart, nil, defaultTimeout)
+		err := c2.send(MessageTypeStart, nil, defaultTimeout)
+		require.NoError(t, err)
 
 		msgType, data, err := c1.read(defaultTimeout)
 		require.NoError(t, err)
