@@ -169,7 +169,7 @@ func (gs *GameState) update() (winner bool, winnerLeft bool) {
 			paddleTop := p.paddleY + PADDLE_HEIGHT
 			paddleBottom := p.paddleY
 
-			if paddleBottom < p.expectedBallY && paddleTop > p.expectedBallY {
+			if paddleBottom+deadzone < p.expectedBallY && paddleTop-deadzone > p.expectedBallY {
 				p.move = false
 			}
 		} else {
@@ -334,6 +334,7 @@ func (gs *GameState) update() (winner bool, winnerLeft bool) {
 		if ok {
 			gs.playerLeft.expectedBallY = predictedY
 			gs.playerLeft.move = true
+
 		}
 	}
 
