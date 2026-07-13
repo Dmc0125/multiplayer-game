@@ -6,11 +6,13 @@ import (
 	crypto "crypto/rand"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strings"
 	"time"
@@ -135,30 +137,29 @@ func loadEnvVariable(key string, required bool) (value string) {
 }
 
 func main() {
-	const PORT = ":8080"
+	port := flag.String("port", "8080", "port to listen on")
+	profile := flag.Bool("profile", false, "enable profiling")
+	lobbies := flag.Int("lobbies", 50, "number of lobbies to run")
+	logfileLocation := flag.String("logfile", "", "log file to write to")
+	flag.Parse()
 
-	var logFileLocation string
+	*port = fmt.Sprintf(":%s", *port)
 
-	args := os.Args[1:]
-	if len(args) > 0 {
-		for i := 0; i < len(args); i += 2 {
-			if len(args) <= i+1 {
-				break
+	if *profile {
+		go func() {
+			fmt.Println("Profiling enabled, listening at http://localhost:6060")
+
+			if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+				panic(fmt.Sprintf("Pprof server stopped error: %s", err))
 			}
-
-			k, v := args[i], args[i+1]
-			switch k {
-			case "--log-file":
-				logFileLocation = v
-			}
-		}
+		}()
 	}
 
 	var logWriter io.Writer
-	if logFileLocation != "" {
-		f, err := os.OpenFile(logFileLocation, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+	if *logfileLocation != "" {
+		f, err := os.OpenFile(*logfileLocation, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
 		if err != nil {
-			panic(fmt.Sprintf("Error: unable to open log file %s: %s", logFileLocation, err))
+			panic(fmt.Sprintf("Error: unable to open log file %s: %s", *logfileLocation, err))
 		}
 		logWriter = f
 	} else {
@@ -202,7 +203,7 @@ func main() {
 	if prod {
 		authConfig.RedirectURL = fmt.Sprintf("https://%s/api/callback", domain)
 	} else {
-		authConfig.RedirectURL = fmt.Sprintf("http://%s%s/api/callback", domain, PORT)
+		authConfig.RedirectURL = fmt.Sprintf("http://%s%s/api/callback", domain, *port)
 	}
 	slog.Info("loaded auth config", "redirect_url", authConfig.RedirectURL)
 
@@ -213,12 +214,12 @@ func main() {
 	mux.HandleFunc("/api/auth", authHandler(dbConn, states, clientRedirectUrl))
 	mux.HandleFunc("/api/callback", callbackHandler(dbConn, states, clientRedirectUrl, domain, prod))
 	mux.HandleFunc("/api/logout", authLogoutHandler(dbConn, clientRedirectUrl, domain, prod))
-	mux.HandleFunc("/api/game", gameHandler(dbConn))
+	mux.HandleFunc("/api/game", gameHandler(dbConn, *lobbies))
 
 	handler := logRequest(mux)
 
-	slog.Info(fmt.Sprintf("listening at http://%s%s", domain, PORT))
-	if err := http.ListenAndServe(PORT, handler); err != nil {
+	slog.Info(fmt.Sprintf("listening at http://%s%s", domain, *port))
+	if err := http.ListenAndServe(*port, handler); err != nil {
 		panic(fmt.Sprintf("Error: %s", err))
 	}
 }

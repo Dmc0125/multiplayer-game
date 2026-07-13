@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const FRAME_TIME_SECONDS = 1.0 / 60.0
+const FRAME_TIME_SECONDS = time.Second / 60.0
 
 const GAME_WIDTH = 800.0
 const GAME_HEIGHT = 400.0
@@ -102,16 +102,9 @@ func (gs *GameState) setKey(left bool, key KeyCode, pressed bool) {
 
 func (gs *GameState) advanceTime() {
 	dt := time.Since(gs.prevFrameEndTime).Seconds()
-	if dt < FRAME_TIME_SECONDS {
-		diff := FRAME_TIME_SECONDS - dt
-		time.Sleep(time.Duration(diff * 1e9))
-		dt += diff
-	}
-
 	if gs.status == GameStatusPlaying {
 		gs.dt = dt
 	}
-
 	gs.prevFrameEndTime = time.Now()
 }
 

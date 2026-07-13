@@ -25,9 +25,8 @@ var nextConnId = func() func() ConnId {
 
 type MessageType = byte
 
+// server -> client
 const (
-	// server -> client
-
 	// PlayerJoined is sent to player when other player joins the lobby
 	//
 	// Data expected from this message:
@@ -57,10 +56,11 @@ const (
 	// 0. u8 - MessageTypePong
 	// 1. u32 - client message id
 	MessageTypePong
+)
 
-	// client -> server
-	__MessageTypeClientToServer
-	MessageTypeKey = 100 + iota - __MessageTypeClientToServer - 1
+// client -> server
+const (
+	MessageTypeKey = 100 + iota
 	MessageTypeStart
 	// Ping is used to check if the connection is still alive and to measure latency
 	// Data expected from this message:
@@ -189,7 +189,69 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 		m.done <- true
 	}
 
-outer:
+	handleUpdate := func() {
+		defer gl.game.advanceTime()
+
+		if gl.game.status != GameStatusPlaying {
+			return
+		}
+
+		winner, winnerLeft := gl.game.update()
+		if winner {
+			slog.Info("game ended", "lobby_idx", gl.index, "winner_left", winnerLeft)
+
+			d := make([]byte, 1)
+			if winnerLeft {
+				d[0] = 1
+			}
+			gl.broadcast(MessageTypeGameEnd, d)
+
+			// update db stats
+			slog.Info("updating db stats", "lobby_idx", gl.index)
+
+			batch := pgx.Batch{}
+			col := func(c string) string {
+				if gl.singleplayer {
+					return fmt.Sprintf("sp_%s", c)
+				}
+				return c
+			}
+
+			for _, p := range gl.players {
+				if p.userId > -1 {
+					var c string
+					if p.left == winnerLeft {
+						c = col("wins")
+					} else {
+						c = col("losses")
+					}
+					batch.Queue(
+						fmt.Sprintf("update stats set %s = %s + 1 where user_id = $1", c, c),
+						p.userId,
+					)
+				}
+			}
+
+			if batch.Len() > 0 {
+				br := dbConn.SendBatch(context.Background(), &batch)
+				if _, err := br.Exec(); err != nil {
+					slog.Error("unable to update stats", "lobby_idx", gl.index, "error", err)
+				} else {
+					slog.Info("updated stats", "lobby_idx", gl.index)
+				}
+				br.Close()
+			}
+
+			slog.Info("broadcasting saved", "lobby_idx", gl.index)
+			gl.broadcast(MessageTypeSaved, nil)
+		} else {
+			gl.broadcast(MessageTypeGameState, gl.game.encode())
+		}
+	}
+
+	updateTicker := time.NewTicker(FRAME_TIME_SECONDS)
+	defer updateTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -213,6 +275,16 @@ outer:
 			}
 		case lm := <-gl.messageChan:
 			switch lm.msgType {
+			case MessageTypePing:
+				player := gl.players[lm.connId]
+				ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+
+				d := append([]byte{MessageTypePong}, lm.data...)
+				if err := player.conn.Write(ctx, websocket.MessageBinary, d); err != nil {
+					slog.Error("unable to send message", "error", err)
+				}
+
+				cancel()
 			case MessageTypeKey:
 				if len(lm.data) < 2 {
 					slog.Error("invalid message length", "lobby_idx", gl.index, "conn_id", lm.connId, "length", len(lm.data))
@@ -250,69 +322,8 @@ outer:
 					slog.Info("game started", "lobby_idx", gl.index)
 				}
 			}
-		default:
-			// update
-
-			if gl.game.status != GameStatusPlaying {
-				gl.game.advanceTime()
-				continue outer
-			}
-
-			winner, winnerLeft := gl.game.update()
-			if winner {
-				slog.Info("game ended", "lobby_idx", gl.index, "winner_left", winnerLeft)
-
-				d := make([]byte, 1)
-				if winnerLeft {
-					d[0] = 1
-				}
-				gl.broadcast(MessageTypeGameEnd, d)
-
-				// update db stats
-				slog.Info("updating db stats", "lobby_idx", gl.index)
-
-				batch := pgx.Batch{}
-				col := func(c string) string {
-					if gl.singleplayer {
-						return fmt.Sprintf("sp_%s", c)
-					}
-					return c
-				}
-
-				for _, p := range gl.players {
-					if p.userId > -1 {
-						var c string
-						if p.left == winnerLeft {
-							c = col("wins")
-						} else {
-							c = col("losses")
-						}
-						batch.Queue(
-							fmt.Sprintf("update stats set %s = %s + 1 where user_id = $1", c, c),
-							p.userId,
-						)
-					}
-				}
-
-				if batch.Len() > 0 {
-					br := dbConn.SendBatch(context.Background(), &batch)
-					if _, err := br.Exec(); err != nil {
-						slog.Error("unable to update stats", "lobby_idx", gl.index, "error", err)
-					} else {
-						slog.Info("updated stats", "lobby_idx", gl.index)
-					}
-					br.Close()
-				}
-
-				slog.Info("broadcasting saved", "lobby_idx", gl.index)
-				gl.broadcast(MessageTypeSaved, nil)
-			} else {
-				gl.broadcast(MessageTypeGameState, gl.game.encode())
-			}
-
-			// time
-
-			gl.game.advanceTime()
+		case <-updateTicker.C:
+			handleUpdate()
 		}
 	}
 }
@@ -358,18 +369,22 @@ type LobbyStatus struct {
 }
 
 type Lobbies struct {
-	lobbies         [10]*GameLobby
-	lobbiesStatuses [10]LobbyStatus
+	lobbies         []*GameLobby
+	lobbiesStatuses []LobbyStatus
 	free, used      int
 	messagesChan    chan LobbiesMessage
 }
 
-func newLobbies() *Lobbies {
-	const maxLobbies = 10
+func newLobbies(count int) *Lobbies {
+	lobbies := make([]*GameLobby, count)
+	lobbiesStatuses := make([]LobbyStatus, count)
+
 	return &Lobbies{
-		messagesChan: make(chan LobbiesMessage),
-		free:         maxLobbies,
-		used:         0,
+		lobbies:         lobbies,
+		lobbiesStatuses: lobbiesStatuses,
+		messagesChan:    make(chan LobbiesMessage),
+		free:            count,
+		used:            0,
 	}
 }
 
@@ -515,8 +530,8 @@ func (l *Lobbies) run(dbConn *pgxpool.Pool) {
 	}
 }
 
-func gameHandler(dbConn *pgxpool.Pool) func(w http.ResponseWriter, r *http.Request) {
-	lobbies := newLobbies()
+func gameHandler(dbConn *pgxpool.Pool, lobbiesCount int) func(w http.ResponseWriter, r *http.Request) {
+	lobbies := newLobbies(lobbiesCount)
 	go lobbies.run(dbConn)
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -589,12 +604,6 @@ func gameHandler(dbConn *pgxpool.Pool) func(w http.ResponseWriter, r *http.Reque
 				m := MessageType(bytes[0])
 
 				switch m {
-				case MessageTypePing:
-					d := append([]byte{MessageTypePong}, bytes[1:]...)
-					if err := conn.Write(r.Context(), websocket.MessageBinary, d); err != nil {
-						logReqError(r, "unable to send message", "error", err)
-						return
-					}
 				default:
 					res.gameLobbyMessageChan <- GameLobbyMessage{connId, m, bytes[1:]}
 				}
