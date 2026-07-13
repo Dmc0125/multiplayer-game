@@ -53,10 +53,6 @@ Integration tests for lifecycle of a connection. For these tests to run, the ser
 on localhost:8080.
 
 ```bash
-go run ./server
-```
-
-```bash
 go test -count=1 ./testing/lifecycle
 ```
 
@@ -71,7 +67,7 @@ supports these flags:
 - `-ramp`: ramp up time for clients to connect (default: `20s`)
 
 ```bash
-go test -count=1 ./testing/stress_test
+go run ./testing/perf
 ```
 
 While running the stress test and if the server was started with the `-profile` flag,
