@@ -122,7 +122,7 @@ What needs to be done manually:
 
 ### Continuous deployment
 
-- Run `deploy.sh <project_dir> <server_ip>` locally to deploy the project
+- Run `deploy.sh <server_ip>` locally to deploy the project
 
 What the script does:
 
