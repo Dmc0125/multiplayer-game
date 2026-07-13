@@ -530,7 +530,7 @@ func (l *Lobbies) run(dbConn *pgxpool.Pool) {
 	}
 }
 
-func gameHandler(dbConn *pgxpool.Pool, lobbiesCount int) func(w http.ResponseWriter, r *http.Request) {
+func gameHandler(prod bool, dbConn *pgxpool.Pool, lobbiesCount int) func(w http.ResponseWriter, r *http.Request) {
 	lobbies := newLobbies(lobbiesCount)
 	go lobbies.run(dbConn)
 
@@ -544,7 +544,14 @@ func gameHandler(dbConn *pgxpool.Pool, lobbiesCount int) func(w http.ResponseWri
 		singleplayer := r.URL.Query().Get("singleplayer") == "1"
 		logReqInfo(r, "init websocket connection", "user_id", userId, "singleplayer", singleplayer)
 
-		conn, err := websocket.Accept(w, r, nil)
+		var connOpts  *websocket.AcceptOptions
+		if !prod {
+			connOpts = &websocket.AcceptOptions{
+				InsecureSkipVerify: true,
+			}
+		}
+		
+		conn, err := websocket.Accept(w, r, connOpts)
 		if err != nil {
 			logReqError(r, "unable to accept websocket connection", "error", err)
 			http.Error(w, "Error: unable to accept websocket connection", http.StatusInternalServerError)

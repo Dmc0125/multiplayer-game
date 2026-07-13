@@ -38,6 +38,10 @@ type GamePlayerState struct {
 	bot     bool
 	keys    map[KeyCode]bool
 	paddleY float32
+
+	// bot
+	move          bool
+	expectedBallY float32
 }
 
 type GameStatus uint8
@@ -132,82 +136,44 @@ func (gs *GameState) encode() (out []byte) {
 	return
 }
 
-func predictBallY(ball GameBall, paddleLeft bool) (predictedY float32, ok bool) {
-	if ball.x < PADDLE_LEFT_X || ball.x > PADDLE_RIGHT_X {
-		return
-	}
-
-	updateBall := func(b *GameBall) {
-		b.y += b.vy * float32(FRAME_TIME_SECONDS)
-		b.x += b.vx * float32(FRAME_TIME_SECONDS)
-
-		if b.y-BALL_RADIUS < 0 {
-			b.y = BALL_RADIUS
-			b.vy = -b.vy
-		} else if b.y+BALL_RADIUS > GAME_HEIGHT {
-			b.y = GAME_HEIGHT - BALL_RADIUS
-			b.vy = -b.vy
-		}
-	}
-
-	if paddleLeft && ball.vx < 0 {
-		// ball going left
-		ok = true
-		for {
-			updateBall(&ball)
-			if ball.x-BALL_RADIUS < PADDLE_LEFT_X+PADDLE_WIDTH {
-				predictedY = ball.y
-				break
-			}
-		}
-	} else if !paddleLeft && ball.vx > 0 {
-		// ball going left
-		ok = true
-		for {
-			updateBall(&ball)
-			if ball.x+BALL_RADIUS > PADDLE_RIGHT_X {
-				predictedY = ball.y
-				break
-			}
-		}
-	}
-
-	return
-}
-
 func (gs *GameState) update() (winner bool, winnerLeft bool) {
 	dt := float32(gs.dt)
 
-	updatePaddle := func(p *GamePlayerState, left bool) {
-		if p.bot {
-			predictedY, ok := predictBallY(gs.ball, left)
-			const deadzone = 10.0
-			if ok {
-				if predictedY > p.paddleY+PADDLE_HEIGHT-deadzone {
-					p.keys[KeyCodeArrowUp] = true
-				} else if predictedY < p.paddleY+deadzone {
-					p.keys[KeyCodeArrowDown] = true
-				}
-			}
-
-			defer func() {
-				p.keys[KeyCodeArrowUp] = false
-				p.keys[KeyCodeArrowDown] = false
-			}()
-		}
-
-		// update paddle
-		if p.keys[KeyCodeArrowUp] {
+	updatePaddlePosition := func(p *GamePlayerState, moveUp, moveDown bool) {
+		if moveUp {
 			p.paddleY += PADDLE_SPEED_PER_SECOND * dt
 			if p.paddleY+PADDLE_HEIGHT > GAME_HEIGHT {
 				p.paddleY = GAME_HEIGHT - PADDLE_HEIGHT
 			}
 		}
-		if p.keys[KeyCodeArrowDown] {
+		if moveDown {
 			p.paddleY -= PADDLE_SPEED_PER_SECOND * dt
 			if p.paddleY < 0 {
 				p.paddleY = 0
 			}
+		}
+	}
+
+	updatePaddle := func(p *GamePlayerState, left bool) {
+		const deadzone = 10.0
+		if p.bot && p.move {
+			var moveUp, moveDown bool
+			if p.expectedBallY > p.paddleY+PADDLE_HEIGHT-deadzone {
+				moveUp = true
+			} else if p.expectedBallY < p.paddleY+deadzone {
+				moveDown = true
+			}
+
+			updatePaddlePosition(p, moveUp, moveDown)
+
+			paddleTop := p.paddleY + PADDLE_HEIGHT
+			paddleBottom := p.paddleY
+
+			if paddleBottom < p.expectedBallY && paddleTop > p.expectedBallY {
+				p.move = false
+			}
+		} else {
+			updatePaddlePosition(p, p.keys[KeyCodeArrowUp], p.keys[KeyCodeArrowDown])
 		}
 	}
 
@@ -306,8 +272,69 @@ func (gs *GameState) update() (winner bool, winnerLeft bool) {
 		return
 	}
 
-	if !ballCollisionWithPaddles(&gs.ball, &gs.playerLeft, PADDLE_LEFT_X) {
-		ballCollisionWithPaddles(&gs.ball, &gs.playerRight, PADDLE_RIGHT_X)
+	predictBallY := func(ball GameBall, paddleLeft bool) (predictedY float32, ok bool) {
+		if ball.x < PADDLE_LEFT_X || ball.x > PADDLE_RIGHT_X+PADDLE_WIDTH {
+			return
+		}
+
+		updateBall := func(b *GameBall) {
+			fts := float32(FRAME_TIME_SECONDS) / float32(time.Second)
+			b.y += b.vy * fts
+			b.x += b.vx * fts
+
+			if b.y-BALL_RADIUS < 0 {
+				b.y = BALL_RADIUS
+				b.vy = -b.vy
+			} else if b.y+BALL_RADIUS > GAME_HEIGHT {
+				b.y = GAME_HEIGHT - BALL_RADIUS
+				b.vy = -b.vy
+			}
+		}
+
+		if paddleLeft && ball.vx < 0 {
+			// ball going left
+			ok = true
+			for {
+				updateBall(&ball)
+				if ball.x-BALL_RADIUS < PADDLE_LEFT_X+PADDLE_WIDTH {
+					predictedY = ball.y
+					break
+				}
+			}
+		} else if !paddleLeft && ball.vx > 0 {
+			// ball going left
+			ok = true
+			for {
+				updateBall(&ball)
+				if ball.x+BALL_RADIUS > PADDLE_RIGHT_X {
+					predictedY = ball.y
+					break
+				}
+			}
+		}
+
+		return
+	}
+
+	collided := ballCollisionWithPaddles(&gs.ball, &gs.playerLeft, PADDLE_LEFT_X)
+	if collided && gs.playerRight.bot {
+		predictedY, ok := predictBallY(gs.ball, false)
+		if ok {
+			gs.playerRight.expectedBallY = predictedY
+			gs.playerRight.move = true
+		}
+	}
+	if collided {
+		return
+	}
+
+	collided = ballCollisionWithPaddles(&gs.ball, &gs.playerRight, PADDLE_RIGHT_X)
+	if collided && gs.playerLeft.bot {
+		predictedY, ok := predictBallY(gs.ball, true)
+		if ok {
+			gs.playerLeft.expectedBallY = predictedY
+			gs.playerLeft.move = true
+		}
 	}
 
 	return

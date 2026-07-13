@@ -214,7 +214,7 @@ func main() {
 	mux.HandleFunc("/api/auth", authHandler(dbConn, states, clientRedirectUrl))
 	mux.HandleFunc("/api/callback", callbackHandler(dbConn, states, clientRedirectUrl, domain, prod))
 	mux.HandleFunc("/api/logout", authLogoutHandler(dbConn, clientRedirectUrl, domain, prod))
-	mux.HandleFunc("/api/game", gameHandler(dbConn, *lobbies))
+	mux.HandleFunc("/api/game", gameHandler(prod, dbConn, *lobbies))
 
 	handler := logRequest(mux)
 
