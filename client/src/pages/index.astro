@@ -41,7 +41,7 @@ if (Astro.cookies.has("session_id")) {
 
 <Layout>
     <div class="pt-[10%] flex flex-col items-center justify-center">
-        <h1 class="text-light-1 text-2xl sm:text-4xl font-bold">Paddle royale</h1>
+        <h1 class="text-black text-2xl sm:text-4xl font-bold">Paddle royale</h1>
         {
             loggedIn ? (
                 <UserInfo
@@ -54,24 +54,25 @@ if (Astro.cookies.has("session_id")) {
             ) : (
                 <>
                     <a
-                        class="btn w-80 mt-8 flex items-center justify-center"
+                        class="btn-2 btn-big mt-8 flex items-center justify-center"
                         href={`${API_URL}/api/auth`}
                     >
                         Login
                     </a>
-                    <p class="text-light-2 mt-8 text-sm font-light">Or play as a guest</p>
+                    <p class="text-black mt-8 text-sm font-light">Or play as a guest</p>
                 </>
             )
         }
-        <a class="btn w-80 mt-8 flex items-center justify-center" href="/singleplayer">
+        <a class="btn-2 blue btn-big mt-8 flex items-center justify-center" href="/singleplayer">
             Singleplayer
         </a>
-        <a class="btn w-80 mt-8 flex items-center justify-center" href="/multiplayer">Multiplayer</a
+        <a class="btn-2 pink btn-big mt-8 flex items-center justify-center" href="/multiplayer"
+            >Multiplayer</a
         >
         {
             loggedIn && (
                 <a
-                    class="btn w-80 mt-8 flex items-center justify-center"
+                    class="btn-2 btn-big mt-8 flex items-center justify-center"
                     href={`${API_URL}/api/logout`}
                 >
                     Logout

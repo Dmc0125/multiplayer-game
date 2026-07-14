@@ -1,13 +1,9 @@
 @import "tailwindcss";
 
 @theme {
-    --color-orange: #dd6e42;
-    --color-yellow: #e8dab2;
-    --color-dark-1: #666666;
-    --color-dark-2: #353535;
-    --color-dark-3: #1f1f1f;
-    --color-light-1: #eaeaea;
-    --color-light-2: #a3a3a3;
+    --color-green: #51df7b;
+    --color-blue: #35a7ff;
+    --color-pink: #ef476f;
 }
 
 @font-face {
@@ -19,53 +15,31 @@
     font-family: "Press Start 2P";
 }
 
+html,
+body {
+    touch-action: manipulation;
+}
+
 button {
     @apply cursor-pointer;
 }
 
-.btn {
-    @apply px-4 py-2 sm:px-8 sm:py-3 
-        bg-light-1 border-2 sm:border-4 border-orange 
-        text-orange text-sm sm:text-base
-        tracking-widest uppercase
-        transition-all duration-150 ease-in-out
-        /* shadow-[0_0_12px_theme(colors.orange/40%)] */
-        hover:bg-orange hover:text-dark-2 
-        /* hover:shadow-[0_0_24px_theme(colors.orange/70%)] */
-        active:translate-y-0.5 
-        /* active:shadow-[0_0_6px_theme(colors.orange/40%)] */
-        disabled:pointer-events-none
-        disabled:border-dark-1
-        disabled:text-dark-3
-        disabled:shadow-none
-        disabled:hover:bg-transparent
-        disabled:hover:text-dark-3
-        disabled:hover:shadow-none
-        disabled:active:translate-y-0;
+.btn-big {
+    @apply w-60 py-4 sm:w-80 sm:py-6;
 }
 
-.arcade-grid {
-    background-color: var(--color-dark-3);
-    background-image:
-        linear-gradient(rgba(221, 110, 66, 0.06) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(221, 110, 66, 0.06) 1px, transparent 1px);
-    background-size: 32px 32px;
+.btn-2 {
+    @apply border-3 border-black rounded-lg text-black bg-white shadow-[8px_8px_0_var(--color-black)];
 }
 
-.crt-scanlines {
-    position: relative;
+.btn-2.blue {
+    @apply bg-blue;
 }
 
-.crt-scanlines::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: repeating-linear-gradient(
-        to bottom,
-        rgba(0, 0, 0, 0) 0px,
-        rgba(0, 0, 0, 0) 2px,
-        rgba(0, 0, 0, 0.18) 3px,
-        rgba(0, 0, 0, 0.18) 4px
-    );
+.btn-2.pink {
+    @apply bg-pink;
+}
+
+.btn-2:active {
+    @apply translate-y-[8px] translate-x-[8px] shadow-[0px_0px_0px_var(--color-black)];
 }

@@ -13,20 +13,20 @@ const avatarUrl = `https://api.dicebear.com/10.x/thumbs/svg?seed=${name}`
 <div class="mt-10 flex flex-col">
     <div class="mt-10 flex items-center justify-center gap-4">
         <img class="w-6 h-6 rounded-full" src={avatarUrl} alt="avatar" />
-        <h2 class="text-light-2">{name}</h2>
+        <h2 class="text-black">{name}</h2>
     </div>
 
-    <div class="mt-5 grid grid-cols-[auto_auto] gap-x-4 gap-y-2">
-        <p class="text-light-2 text-sm">Wins</p>
-        <p class="text-light-2 text-sm">{wins}</p>
+    <div class="mt-5 grid grid-cols-[auto_auto] gap-x-4 gap-y-2 text-black text-sm">
+        <p>Wins</p>
+        <p>{wins}</p>
 
-        <p class="text-light-2 text-sm">Losses</p>
-        <p class="text-light-2 text-sm">{losses}</p>
+        <p>Losses</p>
+        <p>{losses}</p>
 
-        <p class="text-light-2 text-sm">Singleplayer wins</p>
-        <p class="text-light-2 text-sm">{spWins}</p>
+        <p>Singleplayer wins</p>
+        <p>{spWins}</p>
 
-        <p class="text-light-2 text-sm">Singleplayer losses</p>
-        <p class="text-light-2 text-sm">{spLosses}</p>
+        <p>Singleplayer losses</p>
+        <p>{spLosses}</p>
     </div>
 </div>

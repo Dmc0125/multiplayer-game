@@ -24,9 +24,9 @@ function drawGameState(
 
     for (const paddle of paddles) {
         if (paddle.me) {
-            ctx.fillStyle = "#e8dab2"
+            ctx.fillStyle = "#35A7FF"
         } else {
-            ctx.fillStyle = "#dd6e42"
+            ctx.fillStyle = "#EF476F"
         }
 
         let paddleX: number
@@ -42,7 +42,7 @@ function drawGameState(
         ctx.fill()
     }
 
-    ctx.fillStyle = "#e8dab2"
+    ctx.fillStyle = "#000000"
     ctx.beginPath()
     const y = gameHeight - ballY
     ctx.arc(ballX, y, BALL_RADIUS, 0, 2 * Math.PI)
@@ -62,32 +62,33 @@ type MenuScreenProps = {
     players: Players
     onStart: (() => void) | undefined
     onPlayAgain: (() => void) | undefined
+    landscape?: boolean
 }
 
-function MenuScreen({ status, players, onStart, onPlayAgain }: MenuScreenProps) {
+function MenuScreen({ status, players, onStart, onPlayAgain, landscape }: MenuScreenProps) {
     if (status === "connecting") {
-        return <p className="text-white">Connecting</p>
+        return <p className="text-sm text-black">Connecting</p>
     }
     if (status === "waiting") {
-        return <p className="text-white">Waiting for other player</p>
+        return <p className="text-sm text-black">Waiting for other player</p>
     }
     if (status === "waiting-player-left") {
         return (
             <div className="flex flex-col gap-4 items-center justify-center">
-                <p className="text-white">Other player left</p>
-                <p className="text-white">Waiting for other player</p>
+                <p className="text-sm text-black">Other player left</p>
+                <p className="text-sm text-black">Waiting for other player</p>
             </div>
         )
     }
     if (status === "game-start") {
         return (
             <button
-                className="btn"
+                className="btn-2 px-4 py-2 sm:px-8 sm:py-3"
                 onClick={() => {
                     onStart?.()
                 }}
             >
-                Start (r)
+                Start {landscape ? "" : "(r)"}
             </button>
         )
     }
@@ -99,19 +100,20 @@ function MenuScreen({ status, players, onStart, onPlayAgain }: MenuScreenProps) 
         } else {
             p = players.right!
         }
+        const textCn = p?.me ? "text-blue" : "text-pink"
         const text = p?.me ? "You won!" : "You lost!"
 
         return (
             <div className="flex flex-col gap-4 items-center justify-center">
-                <p className="text-light-2">{text}</p>
+                <p className={textCn}>{text}</p>
                 <button
-                    className="btn"
+                    className="btn-2 px-4 py-2 sm:px-8 sm:py-3"
                     disabled={!saved}
                     onClick={() => {
                         onPlayAgain?.()
                     }}
                 >
-                    Play again (r)
+                    Play again {landscape ? "" : "(r)"}
                 </button>
             </div>
         )
@@ -147,17 +149,11 @@ function PlayerScore({ singleplayer, players, left }: PlayerScoreProps) {
     const ready = p?.ready || false
 
     return (
-        <div
-            className={`w-[40%] p-4 bg-dark-3 flex flex-col border-3 border-dark-2 ${left ? "" : "text-right"}`}
-        >
-            <p className={`text-xs text-light-2 uppercase ${hideCn}`}>{me ? "You" : "Enemy"}</p>
-            <p
-                className={`mt-3 text-4xl font-medium ${me ? "text-yellow" : "text-orange"} ${hideCn}`}
-            >
-                {score}
-            </p>
+        <div className="flex flex-col items-center gap-2">
+            <p className={`text-xs uppercase ${hideCn}`}>{me ? "You" : "Enemy"}</p>
+            <p className={`${me ? "text-blue" : "text-pink"} text-lg`}>{score}</p>
             {!singleplayer && (
-                <p className={`mt-2 text-xs ${ready ? "text-green-700" : "text-dark-1"} ${hideCn}`}>
+                <p className={`text-xs ${ready ? "text-black" : "text-gray-400"} ${hideCn}`}>
                     Ready
                 </p>
             )}
@@ -338,12 +334,7 @@ function GameCanvas({ canvasRef }: GameCanvasProps) {
         }
     }, [])
 
-    return (
-        <canvas
-            ref={canvasRef}
-            className="w-full aspect-[2/1] border-3 border-orange bg-dark-3 crt-scanlines"
-        ></canvas>
-    )
+    return <canvas ref={canvasRef} className="w-full aspect-[2/1]"></canvas>
 }
 
 type GameLayoutProps = {
@@ -356,93 +347,122 @@ function PortraitLayout({ singleplayer, canvasRef, gameConnection }: GameLayoutP
     const { status, players, latencyMs, connection } = gameConnection
 
     return (
-        <div className="pt-10 px-2 sm:px-0 flex flex-col items-center justify-center">
-            <h1 className="text-light-1 text-xl sm:text-4xl font-bold">
-                {singleplayer ? "Singleplayer" : "Multiplayer"}
-            </h1>
+        <div className="w-full max-w-[800px] mx-auto px-4">
+            {/* score, ping, ready */}
+            <header
+                className="
+                w-full px-4 py-4 bg-white 
+                border-l-3 border-r-3 border-b-3 border-black rounded-b-lg flex items-center justify-center 
+                "
+            >
+                {/* <div className="hidden sm:flex items-center gap-2"> */}
+                {/*     <p className="text-sm">Ping: {latencyMs}ms</p> */}
+                {/* </div> */}
 
-            <div className="w-full max-w-[800px] mt-10">
-                <div className="w-full max-w-[800px] flex items-center justify-between">
+                <div className="flex items-center gap-6">
                     <PlayerScore players={players} singleplayer={singleplayer} left={true} />
-
-                    <div className="flex flex-col items-center gap-2 text-xs">
-                        <p className="text-yellow">Connected</p>
-                        <p className="text-light-2">Ping {latencyMs}ms</p>
-                    </div>
-
+                    <p>vs</p>
                     <PlayerScore players={players} singleplayer={singleplayer} left={false} />
                 </div>
+            </header>
 
-                <div className="relative w-full max-w-[800px] mt-6 aspect-[2/1] mx-auto canvas-wrapper">
-                    <GameCanvas canvasRef={canvasRef} />
-                    <div className="absolute inset-0 flex items-center justify-center">
-                        <MenuScreen
-                            status={status}
-                            onStart={connection.current.sendStartMessage}
-                            players={players}
-                            onPlayAgain={connection.current.sendStartMessage}
-                        />
-                    </div>
+            <div className="w-full mt-10 border-3 border-black rounded-lg aspect-[2/1] bg-white relative">
+                <GameCanvas canvasRef={canvasRef} />
+                <div className="absolute inset-0 flex items-center justify-center">
+                    <MenuScreen
+                        status={status}
+                        onStart={connection.current.sendStartMessage}
+                        players={players}
+                        onPlayAgain={connection.current.sendStartMessage}
+                    />
                 </div>
+            </div>
 
-                <div className="flex gap-8 items-center w-fit mx-auto mt-6">
-                    <div className="flex flex-col items-center gap-2">
-                        <div className="bg-dark-2 w-fit p-2 rounded">
-                            <svg className="size-4 text-light-2">
-                                <use href="/icons.svg#arrow-up"></use>
-                            </svg>
-                        </div>
-                        <p className="text-xs text-light-2">up</p>
-                    </div>
-                    <div className="flex flex-col items-center gap-2">
-                        <div className="bg-dark-2 w-fit p-2 rounded">
-                            <svg className="size-4 text-light-2 rotate-180">
-                                <use href="/icons.svg#arrow-up"></use>
-                            </svg>
-                        </div>
-                        <p className="text-xs text-light-2">down</p>
-                    </div>
-                </div>
+            {/* tooltip */}
+            <div className="w-full mt-10 flex items-center justify-center gap-2 flex-wrap">
+                <p className="text-sm text-black">UP / DOWN to move </p>
+                <p className="text-sm text-black">|</p>
+                <p className="text-sm text-black">(r) to start</p>
             </div>
         </div>
     )
 }
 
-function LandscapeLayout({ canvasRef, gameConnection }: GameLayoutProps) {
+type LandscapeButtonProps = {
+    sendKeyUp: (key: number) => void
+    sendKeyDown: (key: number) => void
+    keyCode: number
+    action: string
+}
+
+function LandscapeButton({ sendKeyUp, sendKeyDown, keyCode, action }: LandscapeButtonProps) {
+    return (
+        <button
+            className={`w-full aspect-[1/1] ${action === "UP" ? "bg-blue rounded-t-lg" : "bg-pink rounded-b-lg"}`}
+            onTouchStart={() => sendKeyDown(keyCode)}
+            onTouchEnd={() => sendKeyUp(keyCode)}
+            onMouseDown={() => sendKeyDown(keyCode)}
+            onMouseUp={() => sendKeyUp(keyCode)}
+        >
+            {action}
+        </button>
+    )
+}
+
+function LandscapeLayout({ canvasRef, gameConnection, singleplayer }: GameLayoutProps) {
     const { status, players, connection } = gameConnection
     const { sendKeyUp, sendKeyDown, sendStartMessage } = connection.current
 
+    const buttonUp = (
+        <LandscapeButton
+            sendKeyUp={sendKeyUp}
+            sendKeyDown={sendKeyDown}
+            keyCode={keyCodeMap["ArrowUp"]}
+            action="UP"
+        />
+    )
+    const buttonDown = (
+        <LandscapeButton
+            sendKeyUp={sendKeyUp}
+            sendKeyDown={sendKeyDown}
+            keyCode={keyCodeMap["ArrowDown"]}
+            action="DOWN"
+        />
+    )
+
     return (
-        <div className="w-full h-[100vh] grid grid-cols-[15%_1fr_15%] items-center bg-black">
-            <button
-                className="h-full bg-dark-3 text-yellow flex items-center justify-center"
-                onMouseDown={() => sendKeyDown(keyCodeMap["ArrowUp"])}
-                onMouseUp={() => sendKeyUp(keyCodeMap["ArrowUp"])}
-                onTouchStart={() => sendKeyDown(keyCodeMap["ArrowUp"])}
-                onTouchEnd={() => sendKeyUp(keyCodeMap["ArrowUp"])}
-            >
-                UP
-            </button>
-            <div className="relative w-full aspect-[2/1] mx-auto">
-                <GameCanvas canvasRef={canvasRef} />
-                <div className="absolute inset-0 flex items-center justify-center">
-                    <MenuScreen
-                        status={status}
-                        onStart={sendStartMessage}
-                        players={players}
-                        onPlayAgain={sendStartMessage}
-                    />
+        <div className="w-full h-[100vh] px-4 grid grid-cols-[20%_1fr_20%] gap-x-4 items-center">
+            <div className="flex flex-col items-center justify-center rounded-lg border-3 border-black">
+                {buttonUp}
+                <div className="w-full h-[3px] bg-black"></div>
+                {buttonDown}
+            </div>
+
+            <div className="w-full flex flex-col">
+                <div className="w-full pb-4 flex items-center justify-center gap-4">
+                    <PlayerScore players={players} singleplayer={singleplayer} left={true} />
+                    <p>vs</p>
+                    <PlayerScore players={players} singleplayer={singleplayer} left={false} />
+                </div>
+                <div className="w-full h-fit aspect-[2/1] border-3 border-black rounded-lg bg-white relative">
+                    <GameCanvas canvasRef={canvasRef} />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                        <MenuScreen
+                            status={status}
+                            onStart={sendStartMessage}
+                            players={players}
+                            onPlayAgain={sendStartMessage}
+                            landscape={true}
+                        />
+                    </div>
                 </div>
             </div>
-            <button
-                className="h-full bg-dark-3 text-yellow flex items-center justify-center"
-                onMouseDown={() => sendKeyDown(keyCodeMap["ArrowDown"])}
-                onMouseUp={() => sendKeyUp(keyCodeMap["ArrowDown"])}
-                onTouchStart={() => sendKeyDown(keyCodeMap["ArrowDown"])}
-                onTouchEnd={() => sendKeyUp(keyCodeMap["ArrowDown"])}
-            >
-                DOWN
-            </button>
+
+            <div className="flex flex-col items-center justify-center rounded-lg border-3 border-black">
+                {buttonUp}
+                <div className="w-full h-[3px] bg-black"></div>
+                {buttonDown}
+            </div>
         </div>
     )
 }
