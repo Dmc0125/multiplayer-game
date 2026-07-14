@@ -317,6 +317,12 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 				}
 
 				if ready {
+					for _, p := range gl.players {
+						if p.conn != nil {
+							p.ready = false
+						}
+					}
+
 					gl.game.start(gl.players)
 					gl.broadcast(MessageTypeStarted, gl.game.encode())
 					slog.Info("game started", "lobby_idx", gl.index)
@@ -544,13 +550,13 @@ func gameHandler(prod bool, dbConn *pgxpool.Pool, lobbiesCount int) func(w http.
 		singleplayer := r.URL.Query().Get("singleplayer") == "1"
 		logReqInfo(r, "init websocket connection", "user_id", userId, "singleplayer", singleplayer)
 
-		var connOpts  *websocket.AcceptOptions
+		var connOpts *websocket.AcceptOptions
 		if !prod {
 			connOpts = &websocket.AcceptOptions{
 				InsecureSkipVerify: true,
 			}
 		}
-		
+
 		conn, err := websocket.Accept(w, r, connOpts)
 		if err != nil {
 			logReqError(r, "unable to accept websocket connection", "error", err)
