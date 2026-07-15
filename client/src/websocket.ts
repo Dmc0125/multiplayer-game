@@ -8,12 +8,11 @@ const MESSAGE_TYPE_JOINED = 0
 const MESSAGE_TYPE_FULL = 1
 const MESSAGE_TYPE_STARTED = 2
 const MESSAGE_TYPE_GAME_STATE = 3
-const MESSAGE_TYPE_GAME_END = 4
-const MESSAGE_TYPE_READY = 5
-const MESSAGE_TYPE_LOBBY_STATE = 6
-const MESSAGE_TYPE_PLAYER_LEFT = 7
-const MESSAGE_TYPE_SAVED = 8
-const MESSAGE_TYPE_PONG = 9
+const MESSAGE_TYPE_READY = 4
+const MESSAGE_TYPE_LOBBY_STATE = 5
+const MESSAGE_TYPE_PLAYER_LEFT = 6
+const MESSAGE_TYPE_SAVED = 7
+const MESSAGE_TYPE_PONG = 8
 
 const MESSAGE_TYPE_KEY = 100
 const MESSAGE_TYPE_START = 101
@@ -34,9 +33,68 @@ function encodeKeyMsg(keyCode: number, down: boolean): Uint8Array<ArrayBuffer> {
     return data
 }
 
-export type Paddle = {
-    connId: number
-    y: number
+const GAME_EVENT_TYPE_COUNTDOWN = 1
+const GAME_EVENT_TYPE_STATE = 2
+const GAME_EVENT_TYPE_WINNER = 3
+
+export type GameEventState = {
+    type: "state"
+    leftPaddleY: number
+    rightPaddleY: number
+    ballX: number
+    ballY: number
+}
+
+export type GameEventWinner = {
+    type: "winner"
+    winnerLeft: boolean
+}
+
+export type GameEventCountdown = {
+    type: "countdown"
+    countdown: number
+}
+
+function decodeMessageGameState(
+    data: ArrayBuffer,
+): GameEventState | GameEventWinner | GameEventCountdown {
+    const view = new DataView(data)
+    const eventType = view.getUint8(0)
+    let offset = 1
+
+    switch (eventType) {
+        case GAME_EVENT_TYPE_STATE: {
+            function decodef32(): number {
+                const f = view.getFloat32(offset, true)
+                offset += 4
+                return f
+            }
+
+            return {
+                type: "state",
+                leftPaddleY: decodef32(),
+                rightPaddleY: decodef32(),
+                ballX: decodef32(),
+                ballY: decodef32(),
+            }
+        }
+        case GAME_EVENT_TYPE_WINNER: {
+            const winnerLeft = view.getUint8(offset) === 1
+            return {
+                type: "winner",
+                winnerLeft,
+            }
+        }
+        case GAME_EVENT_TYPE_COUNTDOWN: {
+            const countdown = view.getUint32(offset, true)
+            return {
+                type: "countdown",
+                countdown,
+            }
+        }
+    }
+
+    throw new Error(`unknown event type ${eventType}`)
 }
 
 export type Connection = {
@@ -50,13 +108,8 @@ export type Connection = {
     onMessagePlayerLeft?: () => void
     onMessageStarted?: () => void
     onMessageReady?: (left: boolean) => void
-    onMessageGameState?: (
-        paddleLeftY: number,
-        paddleRightY: number,
-        ballX: number,
-        ballY: number,
-    ) => void
-    onMessageGameEnd?: (winnerLeft: boolean) => void
+    onMessageGameState?: (event: GameEventState | GameEventWinner | GameEventCountdown) => void
+    // onMessageGameEnd?: (winnerLeft: boolean) => void
     onMessageSaved?: () => void
     onMessagePong?: (latencyMs: number) => void
 }
@@ -154,30 +207,11 @@ export function connectToGameServer(singleplayer: boolean) {
                 connection.onMessageStarted?.()
             }
             case MESSAGE_TYPE_GAME_STATE: {
-                const view = new DataView(data)
-                let offset = 1
-                function decodef32(): number {
-                    const f = view.getFloat32(offset, true)
-                    offset += 4
-                    return f
-                }
-
-                const paddleLeftY = decodef32()
-                const paddleRightY = decodef32()
-                const ballX = decodef32()
-                const ballY = decodef32()
-
-                connection.onMessageGameState?.(paddleLeftY, paddleRightY, ballX, ballY)
-                break
-            }
-            case MESSAGE_TYPE_GAME_END: {
-                const view = new DataView(data)
-                const winner = view.getUint8(1)
-                connection.onMessageGameEnd?.(winner === 1)
+                const event = decodeMessageGameState(view.buffer.slice(1))
+                connection.onMessageGameState?.(event)
                 break
             }
             case MESSAGE_TYPE_READY: {
-                const view = new DataView(data)
                 const left = view.getUint8(1)
                 connection.onMessageReady?.(left === 1)
                 break

@@ -7,6 +7,61 @@ import (
 	"time"
 )
 
+type GameEventType uint8
+
+const (
+	GameEventTypeNone GameEventType = iota
+	GameEventTypeCountdown
+	GameEventTypeState
+	GameEventTypeWinner
+)
+
+type GameEvent struct {
+	Type GameEventType
+
+	// GameEventTypeCountdown
+	Countdown int
+
+	// GameEventTypeState
+	LeftPaddleY  float32
+	RightPaddleY float32
+	BallX        float32
+	BallY        float32
+
+	// GameEventTypeWinner
+	WinnerLeft bool
+}
+
+func (ge *GameEvent) encode() (out []byte) {
+	switch ge.Type {
+	case GameEventTypeCountdown:
+		out = make([]byte, 5)
+		out[0] = byte(ge.Type)
+		binary.LittleEndian.PutUint32(out[1:], uint32(ge.Countdown))
+	case GameEventTypeState:
+		out = make([]byte, 1+16)
+		out[0] = byte(ge.Type)
+		offset := 1
+
+		encodeFloat32 := func(f float32) {
+			binary.LittleEndian.PutUint32(out[offset:], math.Float32bits(f))
+			offset += 4
+		}
+
+		encodeFloat32(ge.LeftPaddleY)
+		encodeFloat32(ge.RightPaddleY)
+		encodeFloat32(ge.BallX)
+		encodeFloat32(ge.BallY)
+	case GameEventTypeWinner:
+		out = make([]byte, 2)
+		out[0] = byte(ge.Type)
+		if ge.WinnerLeft {
+			out[1] = 1
+		}
+	}
+	return
+}
+
 const FRAME_TIME_SECONDS = time.Second / 60.0
 
 const GAME_WIDTH = 800.0
@@ -48,24 +103,31 @@ type GameStatus uint8
 
 const (
 	GameStatusNone GameStatus = iota
+	GameStatusCountdown
 	GameStatusPlaying
 	GameStatusEnded
 	GameStatusPaused
 )
 
 type GameState struct {
-	prevFrameEndTime time.Time
-	dt               float64
-	status           GameStatus
-	ball             GameBall
-	playerLeft       GamePlayerState
-	playerRight      GamePlayerState
+	prevFrameEndTime    time.Time
+	deltaTimeSeconds    float64
+	timeElapsedSeconds  float64
+	status              GameStatus
+	ball                GameBall
+	playerLeft          GamePlayerState
+	playerRight         GamePlayerState
+	countdown           int
+	lastCountdownUpdate float64
 }
 
-func (gs *GameState) start(players map[ConnId]*LobbyPlayer) {
+func (gs *GameState) start(players map[ConnId]*LobbyPlayer) GameEvent {
 	gs.prevFrameEndTime = time.Now()
-	gs.dt = 0.0
-	gs.status = GameStatusPlaying
+	gs.timeElapsedSeconds = 0
+	gs.deltaTimeSeconds = 0.0
+	gs.status = GameStatusCountdown
+	gs.countdown = 3
+	gs.lastCountdownUpdate = 0
 
 	// ball
 	gs.ball.x = GAME_WIDTH / 2
@@ -101,6 +163,10 @@ func (gs *GameState) start(players map[ConnId]*LobbyPlayer) {
 		}
 	}
 
+	return GameEvent{
+		Type:      GameEventTypeCountdown,
+		Countdown: gs.countdown,
+	}
 }
 
 func (gs *GameState) setKey(left bool, key KeyCode, pressed bool) {
@@ -111,36 +177,17 @@ func (gs *GameState) setKey(left bool, key KeyCode, pressed bool) {
 	}
 }
 
-func (gs *GameState) advanceTime() {
-	dt := time.Since(gs.prevFrameEndTime).Seconds()
-	if gs.status == GameStatusPlaying {
-		gs.dt = dt
-	}
-	gs.prevFrameEndTime = time.Now()
+func (gs *GameState) running() bool {
+	return gs.status == GameStatusPlaying || gs.status == GameStatusCountdown
 }
 
-func (gs *GameState) encode() (out []byte) {
-	// Data format:
-	//
-	// 0. float32 - left paddle y
-	// 1. float32 - right paddle y
-	// 2. float32 - ball x
-	// 3. float32 - ball y
-
-	out = make([]byte, 16+8)
-	offset := 0
-
-	encodeFloat32 := func(f float32) {
-		binary.LittleEndian.PutUint32(out[offset:], math.Float32bits(f))
-		offset += 4
+func (gs *GameState) advanceTime() {
+	dt := time.Since(gs.prevFrameEndTime).Seconds()
+	if gs.running() {
+		gs.deltaTimeSeconds = dt
+		gs.timeElapsedSeconds += dt
 	}
-
-	encodeFloat32(gs.playerLeft.paddleY)
-	encodeFloat32(gs.playerRight.paddleY)
-	encodeFloat32(gs.ball.x)
-	encodeFloat32(gs.ball.y)
-
-	return
+	gs.prevFrameEndTime = time.Now()
 }
 
 func predictBallY(ball GameBall, player *GamePlayerState, paddleLeft bool) {
@@ -195,8 +242,38 @@ func predictBallY(ball GameBall, player *GamePlayerState, paddleLeft bool) {
 	return
 }
 
-func (gs *GameState) update() (winner bool, winnerLeft bool) {
-	dt := float32(gs.dt)
+func (gs *GameState) update() (event GameEvent) {
+	if gs.status == GameStatusCountdown {
+		const countdownUpdateInterval float64 = 1
+
+		if gs.lastCountdownUpdate+countdownUpdateInterval < gs.timeElapsedSeconds {
+			gs.countdown -= 1
+			gs.lastCountdownUpdate = gs.timeElapsedSeconds
+
+			if gs.countdown == 0 {
+				gs.status = GameStatusPlaying
+			}
+
+			event = GameEvent{
+				Type:      GameEventTypeCountdown,
+				Countdown: gs.countdown,
+			}
+		}
+
+		return
+	}
+
+	dt := float32(gs.deltaTimeSeconds)
+
+	defer func() {
+		if event.Type == GameEventTypeNone {
+			event.Type = GameEventTypeState
+			event.LeftPaddleY = gs.playerLeft.paddleY
+			event.RightPaddleY = gs.playerRight.paddleY
+			event.BallX = gs.ball.x
+			event.BallY = gs.ball.y
+		}
+	}()
 
 	updatePaddlePosition := func(p *GamePlayerState, moveUp, moveDown bool) {
 		if moveUp {
@@ -248,14 +325,14 @@ func (gs *GameState) update() (winner bool, winnerLeft bool) {
 		case ball.x-BALL_RADIUS < 0:
 			// player right wins
 			gs.status = GameStatusEnded
-			winnerLeft = false
-			winner = true
+			event.Type = GameEventTypeWinner
+			event.WinnerLeft = false
 			return
 		case ball.x+BALL_RADIUS > GAME_WIDTH:
 			// player left wins
 			gs.status = GameStatusEnded
-			winnerLeft = true
-			winner = true
+			event.Type = GameEventTypeWinner
+			event.WinnerLeft = true
 			return
 		case ball.y-BALL_RADIUS < 0:
 			ball.y = BALL_RADIUS

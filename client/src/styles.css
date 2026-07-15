@@ -4,6 +4,8 @@
     --color-green: #51df7b;
     --color-blue: #35a7ff;
     --color-pink: #ef476f;
+
+    --animate-announce: announce 500ms ease-out forwards;
 }
 
 @font-face {
@@ -30,6 +32,7 @@ button {
 
 .btn-2 {
     @apply border-3 border-black rounded-lg text-black bg-white shadow-[8px_8px_0_var(--color-black)];
+    @apply transition-all;
 }
 
 .btn-2.blue {
@@ -42,4 +45,15 @@ button {
 
 .btn-2:active {
     @apply translate-y-[8px] translate-x-[8px] shadow-[0px_0px_0px_var(--color-black)];
+}
+
+@keyframes announce {
+    from {
+        opacity: 1;
+        transform: scale(1);
+    }
+    to {
+        opacity: 0;
+        transform: scale(2);
+    }
 }

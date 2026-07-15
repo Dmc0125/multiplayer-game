@@ -37,7 +37,6 @@ const (
 	MessageTypeFull
 	MessageTypeStarted
 	MessageTypeGameState
-	MessageTypeGameEnd
 	MessageTypeReady
 	// LobbyState is sent to player when they join a lobby
 	//
@@ -192,19 +191,18 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 	handleUpdate := func() {
 		defer gl.game.advanceTime()
 
-		if gl.game.status != GameStatusPlaying {
+		if !gl.game.running() {
 			return
 		}
 
-		winner, winnerLeft := gl.game.update()
-		if winner {
-			slog.Info("game ended", "lobby_idx", gl.index, "winner_left", winnerLeft)
+		event := gl.game.update()
 
-			d := make([]byte, 1)
-			if winnerLeft {
-				d[0] = 1
-			}
-			gl.broadcast(MessageTypeGameEnd, d)
+		switch event.Type {
+		case GameEventTypeCountdown, GameEventTypeState:
+			gl.broadcast(MessageTypeGameState, event.encode())
+		case GameEventTypeWinner:
+			slog.Info("game ended", "lobby_idx", gl.index, "winner_left", event.WinnerLeft)
+			gl.broadcast(MessageTypeGameState, event.encode())
 
 			// update db stats
 			slog.Info("updating db stats", "lobby_idx", gl.index)
@@ -220,7 +218,7 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 			for _, p := range gl.players {
 				if p.userId > -1 {
 					var c string
-					if p.left == winnerLeft {
+					if p.left == event.WinnerLeft {
 						c = col("wins")
 					} else {
 						c = col("losses")
@@ -244,8 +242,6 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 
 			slog.Info("broadcasting saved", "lobby_idx", gl.index)
 			gl.broadcast(MessageTypeSaved, nil)
-		} else {
-			gl.broadcast(MessageTypeGameState, gl.game.encode())
 		}
 	}
 
@@ -323,8 +319,8 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 						}
 					}
 
-					gl.game.start(gl.players)
-					gl.broadcast(MessageTypeStarted, gl.game.encode())
+					startEvent := gl.game.start(gl.players)
+					gl.broadcast(MessageTypeStarted, startEvent.encode())
 					slog.Info("game started", "lobby_idx", gl.index)
 				}
 			}

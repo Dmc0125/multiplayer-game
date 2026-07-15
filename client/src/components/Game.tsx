@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState, type RefObject } from "react"
-import { connectToGameServer, keyCodeMap, type Connection } from "../websocket"
+import {
+    connectToGameServer,
+    keyCodeMap,
+    type Connection,
+    type GameEventCountdown,
+    type GameEventState,
+    type GameEventWinner,
+} from "../websocket"
 
 export const gameWidth = 800
 export const gameHeight = 400
@@ -54,8 +61,9 @@ type GameStatus =
     | "waiting"
     | "waiting-player-left"
     | "game-start"
-    | { status: "game-end"; saved: boolean; winnerLeft: boolean }
+    | { status: "countdown"; value: number }
     | "playing"
+    | { status: "game-end"; saved: boolean; winnerLeft: boolean }
 
 type MenuScreenProps = {
     status: GameStatus
@@ -65,7 +73,7 @@ type MenuScreenProps = {
     landscape?: boolean
 }
 
-function MenuScreen({ status, players, onStart, onPlayAgain, landscape }: MenuScreenProps) {
+function Announcer({ status, players, onStart, onPlayAgain, landscape }: MenuScreenProps) {
     if (status === "connecting") {
         return <p className="text-sm text-black">Connecting</p>
     }
@@ -92,31 +100,45 @@ function MenuScreen({ status, players, onStart, onPlayAgain, landscape }: MenuSc
             </button>
         )
     }
+    if (status === "playing") {
+        return <p className="text-lg text-black animate-announce">Go</p>
+    }
     if (typeof status === "object") {
-        const { saved, winnerLeft } = status
-        let p: Player
-        if (winnerLeft) {
-            p = players.left!
-        } else {
-            p = players.right!
-        }
-        const textCn = p?.me ? "text-blue" : "text-pink"
-        const text = p?.me ? "You won!" : "You lost!"
+        switch (status.status) {
+            case "countdown": {
+                return (
+                    <p key={status.value} className="text-lg text-black animate-announce">
+                        {status.value}
+                    </p>
+                )
+            }
+            case "game-end": {
+                const { saved, winnerLeft } = status
+                let p: Player
+                if (winnerLeft) {
+                    p = players.left!
+                } else {
+                    p = players.right!
+                }
+                const textCn = p?.me ? "text-blue" : "text-pink"
+                const text = p?.me ? "You won!" : "You lost!"
 
-        return (
-            <div className="flex flex-col gap-4 items-center justify-center">
-                <p className={textCn}>{text}</p>
-                <button
-                    className="btn-2 px-4 py-2 sm:px-8 sm:py-3"
-                    disabled={!saved}
-                    onClick={() => {
-                        onPlayAgain?.()
-                    }}
-                >
-                    Play again {landscape ? "" : "(r)"}
-                </button>
-            </div>
-        )
+                return (
+                    <div className="flex flex-col gap-4 items-center justify-center">
+                        <p className={textCn}>{text}</p>
+                        <button
+                            className="btn-2 px-4 py-2 sm:px-8 sm:py-3"
+                            disabled={!saved}
+                            onClick={() => {
+                                onPlayAgain?.()
+                            }}
+                        >
+                            Play again {landscape ? "" : "(r)"}
+                        </button>
+                    </div>
+                )
+            }
+        }
     }
 
     return <></>
@@ -171,7 +193,10 @@ type GameConnection = {
     latencyMs: number | undefined
 }
 
-function useGameConnection(singleplayer: boolean): GameConnection {
+function useGameConnection(
+    singleplayer: boolean,
+    draw: RefObject<(event: GameEventState) => void>,
+): GameConnection {
     const connection = useRef<Connection>({} as Connection)
     const [status, setStatus] = useState<GameStatus>("connecting")
     const [connId, setConnId] = useState<number | undefined>(undefined)
@@ -247,21 +272,45 @@ function useGameConnection(singleplayer: boolean): GameConnection {
             })
         }
 
-        connection.current.onMessageGameEnd = function (winnerLeft: boolean) {
-            setStatus({ status: "game-end", saved: false, winnerLeft })
-            setPlayers((prev) => {
-                if (winnerLeft) {
-                    prev.left!.score += 1
-                } else {
-                    prev.right!.score += 1
+        connection.current.onMessageGameState = function (
+            event: GameEventState | GameEventWinner | GameEventCountdown,
+        ) {
+            switch (event.type) {
+                case "state": {
+                    draw.current(event)
+                    break
                 }
-                return { ...prev }
-            })
+                case "winner": {
+                    setStatus({ status: "game-end", saved: false, winnerLeft: event.winnerLeft })
+                    setPlayers((prev) => {
+                        if (event.winnerLeft) {
+                            prev.left!.score += 1
+                        } else {
+                            prev.right!.score += 1
+                        }
+                        return { ...prev }
+                    })
+                    break
+                }
+                case "countdown": {
+                    if (event.countdown === 0) {
+                        setStatus("playing")
+                        setPlayers((prev) => {
+                            prev.right!.ready = false
+                            prev.left!.ready = false
+                            return { ...prev }
+                        })
+                    } else {
+                        setStatus({ status: "countdown", value: event.countdown })
+                    }
+                    break
+                }
+            }
         }
 
         connection.current.onMessageSaved = function () {
             setStatus((p) => {
-                if (typeof p === "object") {
+                if (typeof p === "object" && p.status === "game-end") {
                     p.saved = true
                     return { ...p }
                 }
@@ -309,11 +358,11 @@ type GameCanvasProps = {
 
 function GameCanvas({ canvasRef }: GameCanvasProps) {
     function resizeCanvas(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) {
-        ctx.setTransform(1, 0, 0, 1, 0, 0)
-
         const r = canvas.getBoundingClientRect()
-        canvas.width = r.width
-        canvas.height = r.height
+        const dpr = window.devicePixelRatio || 1
+
+        canvas.width = r.width * dpr
+        canvas.height = r.height * dpr
 
         const scaleX = canvas.width / gameWidth
         const scaleY = canvas.height / gameHeight
@@ -369,7 +418,7 @@ function PortraitLayout({ singleplayer, canvasRef, gameConnection }: GameLayoutP
             <div className="w-full mt-10 border-3 border-black rounded-lg aspect-[2/1] bg-white relative">
                 <GameCanvas canvasRef={canvasRef} />
                 <div className="absolute inset-0 flex items-center justify-center">
-                    <MenuScreen
+                    <Announcer
                         status={status}
                         onStart={connection.current.sendStartMessage}
                         players={players}
@@ -447,7 +496,7 @@ function LandscapeLayout({ canvasRef, gameConnection, singleplayer }: GameLayout
                 <div className="w-full h-fit aspect-[2/1] border-3 border-black rounded-lg bg-white relative">
                     <GameCanvas canvasRef={canvasRef} />
                     <div className="absolute inset-0 flex items-center justify-center">
-                        <MenuScreen
+                        <Announcer
                             status={status}
                             onStart={sendStartMessage}
                             players={players}
@@ -473,7 +522,8 @@ type GameProps = {
 
 export function Game({ singleplayer }: GameProps) {
     const canvasElement = useRef<HTMLCanvasElement>(null)
-    const gameConnection = useGameConnection(singleplayer)
+    const draw = useRef<(event: GameEventState) => void>(() => {})
+    const gameConnection = useGameConnection(singleplayer, draw)
     const [landscape, setLandscape] = useState(false)
 
     const { connection, status, players } = gameConnection
@@ -518,27 +568,23 @@ export function Game({ singleplayer }: GameProps) {
     }, [])
 
     useEffect(() => {
-        connection.current.onMessageGameState = function (
-            paddleLeftY: number,
-            paddleRightY: number,
-            ballX: number,
-            ballY: number,
-        ) {
+        draw.current = function (event: GameEventState) {
             const paddlesDraw: PaddleDraw[] = [
                 {
-                    y: paddleLeftY,
+                    y: event.leftPaddleY,
                     left: true,
                     me: players.left?.me === true,
                 },
                 {
-                    y: paddleRightY,
+                    y: event.rightPaddleY,
                     left: false,
                     me: players.right?.me === true,
                 },
             ]
+
             const canvas = canvasElement.current!
             const ctx = canvas.getContext("2d")!
-            drawGameState(ctx, paddlesDraw, ballX, ballY)
+            drawGameState(ctx, paddlesDraw, event.ballX, event.ballY)
         }
     }, [players])
 

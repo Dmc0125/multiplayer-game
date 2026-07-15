@@ -16,7 +16,6 @@ const (
 	MessageTypeFull
 	MessageTypeStarted
 	MessageTypeGameState
-	MessageTypeGameEnd
 	MessageTypeReady
 	MessageTypeLobbyState
 	MessageTypePlayerLeft
@@ -28,6 +27,15 @@ const (
 	MessageTypeKey = 100 + iota - MessageTypeClientToServer - 1
 	MessageTypeStart
 	MessageTypePing
+)
+
+type GameEventType uint8
+
+const (
+	GameEventTypeNone GameEventType = iota
+	GameEventTypeCountdown
+	GameEventTypeState
+	GameEventTypeWinner
 )
 
 type Client struct {
@@ -77,4 +85,3 @@ func (c *Client) Send(msgType MessageType, data []byte, timeout time.Duration) e
 func (c *Client) SendStart(timeout time.Duration) error {
 	return c.Send(MessageTypeStart, nil, timeout)
 }
-
