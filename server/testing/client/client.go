@@ -3,39 +3,10 @@ package client
 import (
 	"context"
 	"errors"
+	"server/src/core"
 	"time"
 
 	"github.com/coder/websocket"
-)
-
-type MessageType = byte
-
-const (
-	// server -> client
-	MessageTypePlayerJoined MessageType = iota
-	MessageTypeFull
-	MessageTypeStarted
-	MessageTypeGameState
-	MessageTypeReady
-	MessageTypeLobbyState
-	MessageTypePlayerLeft
-	MessageTypeSaved
-	MessageTypePong
-
-	// client -> server
-	MessageTypeClientToServer
-	MessageTypeKey = 100 + iota - MessageTypeClientToServer - 1
-	MessageTypeStart
-	MessageTypePing
-)
-
-type GameEventType uint8
-
-const (
-	GameEventTypeNone GameEventType = iota
-	GameEventTypeCountdown
-	GameEventTypeState
-	GameEventTypeWinner
 )
 
 type Client struct {
@@ -72,7 +43,7 @@ func (c *Client) Read(timeout time.Duration) (byte, []byte, error) {
 	return data[0], data[1:], nil
 }
 
-func (c *Client) Send(msgType MessageType, data []byte, timeout time.Duration) error {
+func (c *Client) Send(msgType core.MessageType, data []byte, timeout time.Duration) error {
 	d := []byte{byte(msgType)}
 	if data != nil {
 		d = append(d, data...)
@@ -83,5 +54,5 @@ func (c *Client) Send(msgType MessageType, data []byte, timeout time.Duration) e
 }
 
 func (c *Client) SendStart(timeout time.Duration) error {
-	return c.Send(MessageTypeStart, nil, timeout)
+	return c.Send(core.MessageTypeStart, nil, timeout)
 }

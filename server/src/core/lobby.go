@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"context"
@@ -22,6 +22,70 @@ var nextConnId = func() func() ConnId {
 		return ConnId(c.Add(1))
 	}
 }()
+
+type latencyHistorgam struct {
+	name    string
+	limits  []time.Duration
+	buckets []atomic.Uint64
+}
+
+func NewLatencyHistogram(name string) *latencyHistorgam {
+	limits := [...]time.Duration{
+		100 * time.Microsecond,
+		500 * time.Microsecond,
+		1 * time.Millisecond,
+		5 * time.Millisecond,
+		10 * time.Millisecond,
+		25 * time.Millisecond,
+		50 * time.Millisecond,
+		100 * time.Millisecond,
+		250 * time.Millisecond,
+		500 * time.Millisecond,
+		1 * time.Second,
+	}
+	buckets := make([]atomic.Uint64, len(limits)+1)
+	return &latencyHistorgam{
+		name:    name,
+		limits:  limits[:],
+		buckets: buckets,
+	}
+}
+
+func (h *latencyHistorgam) observer(value time.Duration) {
+	for i, limit := range h.limits {
+		if value <= limit {
+			h.buckets[i].Add(1)
+			return
+		}
+	}
+	h.buckets[len(h.buckets)-1].Add(1)
+}
+
+func (h *latencyHistorgam) log(every time.Duration) {
+	ticker := time.NewTicker(every)
+
+	for {
+		<-ticker.C
+
+		attrs := make([]any, 0)
+		for i, limit := range h.limits {
+			value := h.buckets[i].Swap(0)
+			attrs = append(attrs, fmt.Sprintf("<_%s", limit.String()), value)
+
+		}
+
+		attrs = append(attrs, "spill", h.buckets[len(h.buckets)-1].Swap(0))
+		slog.Info(h.name, attrs...)
+	}
+}
+
+var websocketWriteLatency = NewLatencyHistogram("websocket_write_latency")
+
+func connWrite(ctx context.Context, conn *websocket.Conn, mt websocket.MessageType, data []byte) error {
+	start := time.Now()
+	defer websocketWriteLatency.observer(time.Since(start))
+	return conn.Write(ctx, mt, data)
+}
 
 type MessageType = byte
 
@@ -125,6 +189,8 @@ func newGameLobby(index int, singleplayer bool) *GameLobby {
 }
 
 func (gl *GameLobby) broadcast(msgType MessageType, data []byte) {
+	lslog := slog.With("lobby_idx", gl.index)
+
 	d := []byte{byte(msgType)}
 	if data != nil {
 		d = append(d, data...)
@@ -133,8 +199,8 @@ func (gl *GameLobby) broadcast(msgType MessageType, data []byte) {
 	for _, p := range gl.players {
 		if p.conn != nil {
 			ctx, cancel := context.WithTimeout(p.ctx, 2*time.Second)
-			if err := p.conn.Write(ctx, websocket.MessageBinary, d); err != nil {
-				slog.Error("unable to send message", "error", err)
+			if err := connWrite(ctx, p.conn, websocket.MessageBinary, d); err != nil {
+				lslog.Error("unable to send message", "error", err)
 			}
 			cancel()
 		}
@@ -148,17 +214,20 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 		}
 	}()
 
+	lslog := slog.With("lobby_idx", gl.index)
+
 	addPlayer := func(m GameLobbyPlayerJoinMessage) {
 		if m.sendLobbyState {
 			d := binary.LittleEndian.AppendUint32([]byte{MessageTypeLobbyState}, uint32(m.connId))
 			for pcid := range gl.players {
 				d = binary.LittleEndian.AppendUint32(d, uint32(pcid))
 			}
+
 			ctx, cancel := context.WithTimeout(m.ctx, 2*time.Second)
 			defer cancel()
-			if err := m.conn.Write(ctx, websocket.MessageBinary, d); err != nil {
+			if err := connWrite(ctx, m.conn, websocket.MessageBinary, d); err != nil {
 				m.done <- false
-				slog.Error("unable to send message", "error", err)
+				lslog.Error("unable to send message", "error", err)
 				return
 			}
 		}
@@ -166,13 +235,14 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 		if m.sendJoin {
 			d := []byte{byte(MessageTypePlayerJoined)}
 			d = binary.LittleEndian.AppendUint32(d, uint32(m.connId))
+
 			for _, p := range gl.players {
 				if p.conn != nil {
 					ctx, cancel := context.WithTimeout(m.ctx, 2*time.Second)
 					defer cancel()
-					if err := p.conn.Write(ctx, websocket.MessageBinary, d); err != nil {
-						// unable to send message means the player disconnected, which should alreade by handled
-						slog.Error("unable to send message", "error", err)
+					if err := connWrite(ctx, p.conn, websocket.MessageBinary, d); err != nil {
+						// unable to send message means the player disconnected, which should alreade be handled
+						lslog.Error("unable to send message", "error", err)
 					}
 				}
 			}
@@ -201,11 +271,11 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 		case GameEventTypeCountdown, GameEventTypeState:
 			gl.broadcast(MessageTypeGameState, event.encode())
 		case GameEventTypeWinner:
-			slog.Info("game ended", "lobby_idx", gl.index, "winner_left", event.WinnerLeft)
+			lslog.Info("game ended", "winner_left", event.WinnerLeft)
 			gl.broadcast(MessageTypeGameState, event.encode())
 
 			// update db stats
-			slog.Info("updating db stats", "lobby_idx", gl.index)
+			lslog.Debug("updating db stats")
 
 			batch := pgx.Batch{}
 			col := func(c string) string {
@@ -233,14 +303,13 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 			if batch.Len() > 0 {
 				br := dbConn.SendBatch(context.Background(), &batch)
 				if _, err := br.Exec(); err != nil {
-					slog.Error("unable to update stats", "lobby_idx", gl.index, "error", err)
+					lslog.Error("unable to update stats", "error", err)
 				} else {
-					slog.Info("updated stats", "lobby_idx", gl.index)
+					lslog.Debug("updated stats")
 				}
 				br.Close()
 			}
 
-			slog.Info("broadcasting saved", "lobby_idx", gl.index)
 			gl.broadcast(MessageTypeSaved, nil)
 		}
 	}
@@ -255,7 +324,7 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 		case m := <-gl.playerJoinChan:
 			addPlayer(m)
 		case m := <-gl.leaveChan:
-			slog.Info("player left", "lobby_idx", gl.index, "player_left_conn_id", m.connId)
+			lslog.Debug("player left", "player_left_conn_id", m.connId)
 
 			if !gl.singleplayer && len(gl.players) == 2 {
 				gl.game.status = GameStatusNone
@@ -276,14 +345,13 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 				ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 
 				d := append([]byte{MessageTypePong}, lm.data...)
-				if err := player.conn.Write(ctx, websocket.MessageBinary, d); err != nil {
-					slog.Error("unable to send message", "error", err)
+				if err := connWrite(ctx, player.conn, websocket.MessageBinary, d); err != nil {
+					lslog.Error("unable to send message", "error", err)
 				}
 
 				cancel()
 			case MessageTypeKey:
 				if len(lm.data) < 2 {
-					slog.Error("invalid message length", "lobby_idx", gl.index, "conn_id", lm.connId, "length", len(lm.data))
 					continue
 				}
 
@@ -321,7 +389,7 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 
 					startEvent := gl.game.start(gl.players)
 					gl.broadcast(MessageTypeStarted, startEvent.encode())
-					slog.Info("game started", "lobby_idx", gl.index)
+					lslog.Info("game started")
 				}
 			}
 		case <-updateTicker.C:
@@ -450,7 +518,7 @@ func (l *Lobbies) run(dbConn *pgxpool.Pool) {
 					}
 					if success := <-done; !success {
 						// this should be unreachable so just panic
-						panic("expected bot to join singleplayer lobby")
+						panic("unreachable: expected bot to join singleplayer lobby")
 					}
 					lobby.playerJoinChan <- GameLobbyPlayerJoinMessage{
 						ctx:            msg.ctx,
@@ -523,9 +591,9 @@ func (l *Lobbies) run(dbConn *pgxpool.Pool) {
 				l.lobbies[result.index] = nil
 				l.lobbiesStatuses[result.index] = LobbyStatus{}
 
-				slog.Info("lobby deleted", "lobby_idx", result.index, "free", l.free, "used", l.used)
+				slog.Debug("lobby deleted", "lobby_idx", result.index, "free", l.free, "used", l.used)
 			} else {
-				slog.Info("lobby status changed", "lobby_idx", result.index, "player_count", result.playerCount)
+				slog.Debug("lobby status changed", "lobby_idx", result.index, "player_count", result.playerCount)
 				l.lobbiesStatuses[result.index].playerCount = result.playerCount
 			}
 		}
@@ -533,18 +601,22 @@ func (l *Lobbies) run(dbConn *pgxpool.Pool) {
 }
 
 func gameHandler(prod bool, dbConn *pgxpool.Pool, lobbiesCount int) func(w http.ResponseWriter, r *http.Request) {
+	go websocketWriteLatency.log(10 * time.Second)
+
 	lobbies := newLobbies(lobbiesCount)
 	go lobbies.run(dbConn)
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		userId, status := getUserIdFromSession(dbConn, r)
+		userId, status, err := getUserIdFromSession(dbConn, r)
 		if status == http.StatusInternalServerError {
-			http.Error(w, "Error: unable to get user id", status)
+			httpErrorInternal(r, w, err, "unable to get user id")
 			return
 		}
 
+		rslog := getRequestLogger(r)
+
 		singleplayer := r.URL.Query().Get("singleplayer") == "1"
-		logReqInfo(r, "init websocket connection", "user_id", userId, "singleplayer", singleplayer)
+		rslog.Debug("init websocket connection", "user_id", userId, "singleplayer", singleplayer)
 
 		var connOpts *websocket.AcceptOptions
 		if !prod {
@@ -555,12 +627,10 @@ func gameHandler(prod bool, dbConn *pgxpool.Pool, lobbiesCount int) func(w http.
 
 		conn, err := websocket.Accept(w, r, connOpts)
 		if err != nil {
-			logReqError(r, "unable to accept websocket connection", "error", err)
-			http.Error(w, "Error: unable to accept websocket connection", http.StatusInternalServerError)
+			httpErrorInternal(r, w, err, "unable to accept websocket connection")
 			return
 		}
-
-		logReqInfo(r, "websocket connection accepted", "user_id", userId)
+		rslog.Debug("websocket connection accepted", "user_id", userId)
 
 		connId := nextConnId()
 		joinResult := make(chan LobbiesJoinResult, 1)
@@ -576,12 +646,12 @@ func gameHandler(prod bool, dbConn *pgxpool.Pool, lobbiesCount int) func(w http.
 
 		switch res := <-joinResult; res.kind {
 		case LobbiesJoinResultClientDisconnected:
-			logReqInfo(r, "client disconnected", "conn_id", connId, "user_id", userId)
+			rslog.Debug("client disconnected", "conn_id", connId, "user_id", userId)
 			return
 		case LobbiesJoinResultFull:
-			logReqInfo(r, "no free lobby found", "conn_id", connId, "user_id", userId)
-			if err := conn.Write(r.Context(), websocket.MessageBinary, []byte{MessageTypeFull}); err != nil {
-				logReqError(r, "unable to send message", "error", err)
+			rslog.Debug("no free lobby found", "conn_id", connId, "user_id", userId)
+			if err := connWrite(r.Context(), conn, websocket.MessageBinary, []byte{MessageTypeFull}); err != nil {
+				rslog.Error("unable to send message", "error", err)
 				return
 			}
 			return
@@ -594,7 +664,7 @@ func gameHandler(prod bool, dbConn *pgxpool.Pool, lobbiesCount int) func(w http.
 				}
 			}()
 
-			logReqInfo(r, "lobby joined", "conn_id", connId, "user_id", userId)
+			rslog.Debug("lobby joined", "conn_id", connId, "user_id", userId)
 			for {
 				msgType, bytes, err := conn.Read(r.Context())
 				if err != nil {
@@ -602,11 +672,11 @@ func gameHandler(prod bool, dbConn *pgxpool.Pool, lobbiesCount int) func(w http.
 				}
 
 				if msgType != websocket.MessageBinary {
-					logReqError(r, "unexpected message type", "type", msgType)
+					rslog.Error("unexpected message type", "type", msgType)
 					continue
 				}
 				if len(bytes) < 1 {
-					logReqError(r, "invalid message length", "length", len(bytes))
+					rslog.Error("invalid message length", "length", len(bytes))
 					continue
 				}
 

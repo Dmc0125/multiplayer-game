@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"server/src/core"
 	"server/testing/client"
 	"sync"
 	"sync/atomic"
@@ -143,10 +144,10 @@ func waitForStart(c *client.Client, stats *Stats) (ok bool) {
 		return
 	}
 	switch msgType {
-	case client.MessageTypeFull:
+	case core.MessageTypeFull:
 		stats.lobbyFullResponses.Add(1)
 		return
-	case client.MessageTypeLobbyState:
+	case core.MessageTypeLobbyState:
 		stats.lobbyJoinResponses.Add(1)
 	default:
 		stats.unexpectedMessages.Add(1)
@@ -169,7 +170,7 @@ func waitForStart(c *client.Client, stats *Stats) (ok bool) {
 		stats.wsReadErrors.Add(1)
 		return
 	}
-	if msgType != client.MessageTypeReady {
+	if msgType != core.MessageTypeReady {
 		stats.unexpectedMessages.Add(1)
 		return
 	}
@@ -182,7 +183,7 @@ func waitForStart(c *client.Client, stats *Stats) (ok bool) {
 		stats.wsReadErrors.Add(1)
 		return
 	}
-	if msgType != client.MessageTypeStarted {
+	if msgType != core.MessageTypeStarted {
 		stats.unexpectedMessages.Add(1)
 		return
 	}
@@ -250,7 +251,7 @@ func run(ctx context.Context, stats *Stats, url string) {
 			data := binary.LittleEndian.AppendUint32(nil, messageId)
 			messageId += 1
 
-			if err := c.Send(client.MessageTypePing, data, 1*time.Second); err != nil {
+			if err := c.Send(core.MessageTypePing, data, 1*time.Second); err != nil {
 				stats.wsWriteErrors.Add(1)
 				return
 			}
@@ -281,10 +282,13 @@ func read(ctx context.Context, c *client.Client, stats *Stats, pongChannel chan 
 			}
 
 			switch msgType {
-			case client.MessageTypeGameEnd:
-				gameEndChan <- struct{}{}
-				return
-			case client.MessageTypePong:
+			case core.MessageTypeGameState:
+				eventType := data[0]
+				if eventType == 3 {
+					gameEndChan <- struct{}{}
+					return
+				}
+			case core.MessageTypePong:
 				messageId := binary.LittleEndian.Uint32(data)
 				pongChannel <- PongForward{
 					receivedAt: time.Now(),
