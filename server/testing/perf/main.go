@@ -14,8 +14,7 @@ import (
 
 type LatencyBuckets struct {
 	name    string
-	mu      sync.Mutex
-	buckets []uint64
+	buckets []atomic.Uint64
 	limits  []time.Duration
 }
 
@@ -34,7 +33,7 @@ func NewLatencyBuckets(name string) *LatencyBuckets {
 		250 * time.Millisecond,
 		500 * time.Millisecond,
 	}
-	buckets := make([]uint64, len(limits))
+	buckets := make([]atomic.Uint64, len(limits)+1)
 	return &LatencyBuckets{
 		name:    name,
 		limits:  limits[:],
@@ -43,27 +42,22 @@ func NewLatencyBuckets(name string) *LatencyBuckets {
 }
 
 func (h *LatencyBuckets) Add(value time.Duration) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	for i, limit := range h.limits {
 		if value <= limit {
-			h.buckets[i]++
+			h.buckets[i].Add(1)
 			return
 		}
 	}
 
-	h.buckets[len(h.buckets)-1]++
+	h.buckets[len(h.buckets)-1].Add(1)
 }
 
 func (h *LatencyBuckets) Print() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	fmt.Printf("[%s] latency buckets:\n", h.name)
 	for i, limit := range h.limits {
-		fmt.Printf("  <= %s: %d\n", limit.String(), h.buckets[i])
+		fmt.Printf("  <= %s: %d\n", limit.String(), h.buckets[i].Load())
 	}
+	fmt.Printf("  > last: %d\n", h.buckets[len(h.buckets)-1].Load())
 }
 
 const WS_URL = "ws://localhost:8080/api/game"
@@ -74,8 +68,8 @@ type Stats struct {
 	startToReadyLatency   *LatencyBuckets
 	startToStartedLatency *LatencyBuckets
 
-	wsReadErrors  atomic.Uint64
-	wsWriteErrors atomic.Uint64
+	wsReadErrors       atomic.Uint64
+	wsWriteErrors      atomic.Uint64
 	unexpectedMessages atomic.Int64
 
 	handshakeFailures  atomic.Uint64
