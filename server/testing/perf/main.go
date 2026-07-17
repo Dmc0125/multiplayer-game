@@ -3,106 +3,32 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"server/src/core"
 	"server/testing/client"
 	"sync"
-	"sync/atomic"
 	"time"
 )
-
-type LatencyBuckets struct {
-	name    string
-	buckets []atomic.Uint64
-	limits  []time.Duration
-}
-
-func NewLatencyBuckets(name string) *LatencyBuckets {
-	limits := [...]time.Duration{
-		1 * time.Millisecond,
-		3 * time.Millisecond,
-		5 * time.Millisecond,
-		8 * time.Millisecond,
-		10 * time.Millisecond,
-		15 * time.Millisecond,
-		20 * time.Millisecond,
-		25 * time.Millisecond,
-		50 * time.Millisecond,
-		100 * time.Millisecond,
-		250 * time.Millisecond,
-		500 * time.Millisecond,
-	}
-	buckets := make([]atomic.Uint64, len(limits)+1)
-	return &LatencyBuckets{
-		name:    name,
-		limits:  limits[:],
-		buckets: buckets,
-	}
-}
-
-func (h *LatencyBuckets) Add(value time.Duration) {
-	for i, limit := range h.limits {
-		if value <= limit {
-			h.buckets[i].Add(1)
-			return
-		}
-	}
-
-	h.buckets[len(h.buckets)-1].Add(1)
-}
-
-func (h *LatencyBuckets) Print() {
-	fmt.Printf("[%s] latency buckets:\n", h.name)
-	for i, limit := range h.limits {
-		fmt.Printf("  <= %s: %d\n", limit.String(), h.buckets[i].Load())
-	}
-	fmt.Printf("  > last: %d\n", h.buckets[len(h.buckets)-1].Load())
-}
-
-const WS_URL = "ws://localhost:8080/api/game"
-
-type Stats struct {
-	handshakeLatency      *LatencyBuckets
-	pingPongLatency       *LatencyBuckets
-	startToReadyLatency   *LatencyBuckets
-	startToStartedLatency *LatencyBuckets
-
-	wsReadErrors       atomic.Uint64
-	wsWriteErrors      atomic.Uint64
-	unexpectedMessages atomic.Int64
-
-	handshakeFailures  atomic.Uint64
-	lobbyJoinResponses atomic.Uint64
-	lobbyFullResponses atomic.Uint64
-
-	clientsConnectionsAttempted atomic.Int64
-	clientsConnected            atomic.Int64
-
-	lobbiesActive atomic.Int64
-	gamesActive   atomic.Int64
-}
 
 func main() {
 	url := flag.String("url", WS_URL, "websocket url")
 	duration := flag.Duration("duration", 2*time.Minute, "duration of the test")
 	clients := flag.Uint("clients", 10, "number of clients to run")
 	ramp := flag.Duration("ramp", time.Second*20, "ramp up time for clients to connect")
+	silent := flag.Bool("silent", false, "silent mode")
 	flag.Parse()
 
 	fmt.Printf("Starting stress test with %d clients for %s\n", *clients, *duration)
 
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), *duration)
-	stats := Stats{
-		handshakeLatency:      NewLatencyBuckets("handshake"),
-		pingPongLatency:       NewLatencyBuckets("ping-pong"),
-		startToReadyLatency:   NewLatencyBuckets("start-to-ready"),
-		startToStartedLatency: NewLatencyBuckets("start-to-started"),
-	}
 
-	reportDone := make(chan struct{}, 1)
-	go report(ctx, start, &stats, reportDone)
+	ctx, cancel := context.WithTimeout(context.Background(), *duration)
+	stats := newStats(!*silent)
+	go stats.printRegularly(ctx)
+
 	var wg sync.WaitGroup
 	connectionDelay := *ramp / time.Duration(*clients)
 
@@ -111,7 +37,10 @@ func main() {
 
 		go func() {
 			defer wg.Done()
-			run(ctx, &stats, *url)
+			c := SingleplayerClient{
+				stats: stats,
+			}
+			c.Simulate(ctx, *url)
 		}()
 
 		time.Sleep(connectionDelay)
@@ -119,199 +48,227 @@ func main() {
 
 	wg.Wait()
 	cancel()
-	<-reportDone
+	<-stats.done
 
-	stats.handshakeLatency.Print()
-	stats.pingPongLatency.Print()
-	stats.startToReadyLatency.Print()
-	stats.startToStartedLatency.Print()
+	stats.handshakeLatency.PrintDashboard()
+	stats.pingPongLatency.PrintDashboard()
 
-	fmt.Printf("Lobbies joined: %d\n", stats.lobbyJoinResponses.Load())
-	fmt.Printf("Lobbies full: %d\n", stats.lobbyFullResponses.Load())
+	fmt.Printf("Test duration: %s\n", time.Since(start))
 }
 
-func waitForStart(c *client.Client, stats *Stats) (ok bool) {
+type MovingDirection int
+
+const (
+	movingDirectionNone MovingDirection = iota
+	movingDirectionUp
+	movingDirectionDown
+)
+
+func (m MovingDirection) keyCode() core.KeyCode {
+	switch m {
+	case movingDirectionUp:
+		return core.KeyCodeArrowUp
+	case movingDirectionDown:
+		return core.KeyCodeArrowDown
+	default:
+		return 255
+	}
+}
+
+type SingleplayerClient struct {
+	c               *client.Client
+	stats           *Stats
+	movingDirection MovingDirection
+}
+
+func (c *SingleplayerClient) start() (ok bool) {
+	const timeout = 2 * time.Second
+
 	// drain lobby state
-	msgType, _, err := c.Read(1 * time.Second)
+	msgType, _, err := c.c.Read(timeout)
 	if err != nil {
-		stats.wsReadErrors.Add(1)
+		c.stats.wsReadErrorsTotal.Add(1)
 		return
 	}
 	switch msgType {
 	case core.MessageTypeFull:
-		stats.lobbyFullResponses.Add(1)
+		c.stats.lobbiesFullTotal.Add(1)
 		return
 	case core.MessageTypeLobbyState:
-		stats.lobbyJoinResponses.Add(1)
+		c.stats.lobbiesJoinedTotal.Add(1)
 	default:
-		stats.unexpectedMessages.Add(1)
+		c.stats.unexpectedMessagesTotal.Add(1)
 		return
 	}
 
-	stats.lobbiesActive.Add(1)
-
-	startSendTime := time.Now()
+	c.stats.lobbiesConnectedTotal.Add(1)
 
 	// send start
-	if err := c.SendStart(1 * time.Second); err != nil {
-		stats.wsWriteErrors.Add(1)
+	if err := c.c.SendStart(timeout); err != nil {
+		c.stats.wsWriteErrorsTotal.Add(1)
 		return
 	}
 
 	// drain ready
-	msgType, _, err = c.Read(1 * time.Second)
+	msgType, _, err = c.c.Read(timeout)
 	if err != nil {
-		stats.wsReadErrors.Add(1)
+		c.stats.wsReadErrorsTotal.Add(1)
 		return
 	}
 	if msgType != core.MessageTypeReady {
-		stats.unexpectedMessages.Add(1)
+		c.stats.unexpectedMessagesTotal.Add(1)
 		return
 	}
 
-	stats.startToReadyLatency.Add(time.Since(startSendTime))
-
 	// drain started
-	msgType, _, err = c.Read(1 * time.Second)
+	msgType, _, err = c.c.Read(timeout)
 	if err != nil {
-		stats.wsReadErrors.Add(1)
+		c.stats.wsReadErrorsTotal.Add(1)
 		return
 	}
 	if msgType != core.MessageTypeStarted {
-		stats.unexpectedMessages.Add(1)
+		c.stats.unexpectedMessagesTotal.Add(1)
 		return
 	}
 
-	stats.startToStartedLatency.Add(time.Since(startSendTime))
+	c.stats.gamesStartedTotal.Add(1)
 
 	ok = true
 	return
 }
 
-type PongForward struct {
-	receivedAt time.Time
-	messageId  uint32
+func (c *SingleplayerClient) handleGameState(data []byte) (done bool) {
+	if data[0] == byte(core.GameEventTypeWinner) {
+		done = true
+		return
+	}
+	if data[0] != byte(core.GameEventTypeState) {
+		return
+	}
+
+	c.stats.gameStatesEventsReceivedTotal.Add(1)
+
+	offset := 5
+
+	decodeFloat32 := func(data []byte) float32 {
+		f := math.Float32frombits(binary.LittleEndian.Uint32(data))
+		offset += 4
+		return f
+	}
+
+	rightPaddleY := decodeFloat32(data[offset:])
+	ball := core.GameBall{
+		X:  decodeFloat32(data[offset:]),
+		Y:  decodeFloat32(data[offset:]),
+		Vx: decodeFloat32(data[offset:]),
+		Vy: decodeFloat32(data[offset:]),
+	}
+
+	// fmt.Println(leftPaddleY, rightPaddleY, ball)
+
+	ps := core.GamePlayerState{}
+	core.PredictBallY(ball, &ps, false)
+
+	if ps.Move && c.movingDirection == movingDirectionNone {
+		var movingDirection MovingDirection
+		if ball.Y < rightPaddleY {
+			movingDirection = movingDirectionUp
+		} else if ball.Y > rightPaddleY+core.PADDLE_HEIGHT {
+			movingDirection = movingDirectionDown
+		}
+
+		// send move
+		if movingDirection != movingDirectionNone {
+			d := []byte{byte(movingDirection.keyCode()), 1}
+			if err := c.c.Send(core.MessageTypeKey, d, 1*time.Second); err != nil {
+				c.stats.wsWriteErrorsTotal.Add(1)
+			}
+			c.movingDirection = movingDirection
+			c.stats.keydownsSentTotal.Add(1)
+		}
+	} else if !ps.Move && c.movingDirection != movingDirectionNone {
+		// send stop
+		d := []byte{byte(c.movingDirection.keyCode()), 0}
+		if err := c.c.Send(core.MessageTypeKey, d, 1*time.Second); err != nil {
+			c.stats.wsWriteErrorsTotal.Add(1)
+		}
+		c.movingDirection = movingDirectionNone
+		c.stats.keyupsSentTotal.Add(1)
+	}
+	return
 }
 
-func run(ctx context.Context, stats *Stats, url string) {
-	stats.clientsConnectionsAttempted.Add(1)
-	start := time.Now()
+func (c *SingleplayerClient) Simulate(ctx context.Context, url string) {
+	c.stats.clientsConnectionsAttemptedTotal.Add(1)
 
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	handshakeStart := time.Now()
+	var err error
+	c.c, err = client.ClientConnect(url+"?singleplayer=1", ctx)
+	c.stats.handshakeLatency.Add(time.Since(handshakeStart))
 
-	c, err := client.ClientConnect(fmt.Sprintf("%s?singleplayer=1", url), runCtx)
 	if err != nil {
-		stats.handshakeFailures.Add(1)
+		c.stats.wsConnectionErrorsTotal.Add(1)
 		return
 	}
-	defer func() {
-		c.Close()
-		stats.clientsConnected.Add(-1)
-	}()
+	defer c.c.Close()
 
-	stats.handshakeLatency.Add(time.Since(start))
-	stats.clientsConnected.Add(1)
+	c.stats.clientsConnectedTotal.Add(1)
+	c.stats.connectionsActive.Add(1)
+	defer c.stats.connectionsActive.Add(-1)
 
-	if !waitForStart(c, stats) {
+	if !c.start() {
 		return
 	}
 
-	defer func() {
-		stats.lobbiesActive.Add(-1)
-		stats.gamesActive.Add(-1)
-	}()
+	c.stats.gamesActive.Add(1)
+	defer c.stats.gamesActive.Add(-1)
 
-	stats.gamesActive.Add(1)
-
+	//
 	pingTicker := time.NewTicker(1 * time.Second)
-	defer pingTicker.Stop()
-
-	messageId := uint32(0)
-	pongMessages := make(map[uint32]time.Time)
-
-	pongChan := make(chan PongForward)
-	gameEndChan := make(chan struct{})
-	go read(runCtx, c, stats, pongChan, gameEndChan)
+	var pingId uint32
+	pings := make(map[uint32]time.Time)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-pingTicker.C:
-			sentAt := time.Now()
-			pongMessages[messageId] = sentAt
+			pings[pingId] = time.Now()
 
-			data := binary.LittleEndian.AppendUint32(nil, messageId)
-			messageId += 1
+			d := make([]byte, 4)
+			binary.LittleEndian.PutUint32(d, uint32(pingId))
+			pingId += 1
 
-			if err := c.Send(core.MessageTypePing, data, 1*time.Second); err != nil {
-				stats.wsWriteErrors.Add(1)
-				return
+			if err := c.c.Send(core.MessageTypePing, d, 1*time.Second); err != nil {
+				c.stats.wsWriteErrorsTotal.Add(1)
 			}
-		case <-gameEndChan:
-			return
-		case m := <-pongChan:
-			sentAt, ok := pongMessages[m.messageId]
-			if !ok {
-				continue
-			}
-
-			delete(pongMessages, m.messageId)
-			stats.pingPongLatency.Add(m.receivedAt.Sub(sentAt))
-		}
-	}
-}
-
-func read(ctx context.Context, c *client.Client, stats *Stats, pongChannel chan PongForward, gameEndChan chan struct{}) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
 		default:
-			msgType, data, err := c.Read(5 * time.Second)
-			if err != nil {
-				stats.wsReadErrors.Add(1)
+			msgType, data, err := c.c.Read(5 * time.Second)
+			if errors.Is(err, context.DeadlineExceeded) {
 				continue
+			}
+			if err != nil {
+				c.stats.wsReadErrorsTotal.Add(1)
+				return
 			}
 
 			switch msgType {
 			case core.MessageTypeGameState:
-				eventType := data[0]
-				if eventType == 3 {
-					gameEndChan <- struct{}{}
+				if c.handleGameState(data) {
 					return
 				}
 			case core.MessageTypePong:
-				messageId := binary.LittleEndian.Uint32(data)
-				pongChannel <- PongForward{
-					receivedAt: time.Now(),
-					messageId:  messageId,
+				mid := binary.LittleEndian.Uint32(data)
+				sentAt, ok := pings[mid]
+				if !ok {
+					c.stats.unexpectedMessagesTotal.Add(1)
+					continue
 				}
+
+				latency := time.Since(sentAt)
+				c.stats.pingPongLatency.Add(latency)
+				delete(pings, mid)
 			}
-		}
-	}
-}
-
-func report(ctx context.Context, start time.Time, stats *Stats, doneChan chan struct{}) {
-	ticker := time.NewTicker(1 * time.Second)
-
-	for {
-		select {
-		case <-ctx.Done():
-			doneChan <- struct{}{}
-			return
-		case <-ticker.C:
-			fmt.Println("------------------")
-			fmt.Printf("Time elapsed: %s\n", time.Since(start))
-			fmt.Printf("Clients connections attempted: %d\n", stats.clientsConnectionsAttempted.Load())
-			fmt.Printf("Clients connected: %d\n", stats.clientsConnected.Load())
-			fmt.Printf("Lobbies active: %d\n", stats.lobbiesActive.Load())
-			fmt.Printf("Games active: %d\n", stats.gamesActive.Load())
-			fmt.Printf("Unexpected messages: %d\n", stats.unexpectedMessages.Load())
-			fmt.Printf("WS read errors: %d\n", stats.wsReadErrors.Load())
-			fmt.Printf("WS write errors: %d\n", stats.wsWriteErrors.Load())
-			fmt.Println("------------------")
 		}
 	}
 }

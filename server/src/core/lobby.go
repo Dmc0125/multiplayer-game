@@ -189,7 +189,7 @@ func newGameLobby(index int, singleplayer bool) *GameLobby {
 }
 
 func (gl *GameLobby) broadcast(msgType MessageType, data []byte) {
-	lslog := slog.With("lobby_idx", gl.index)
+	lslog := slog.With("lobby_idx", gl.index, "msg_type", msgType)
 
 	d := []byte{byte(msgType)}
 	if data != nil {
@@ -208,11 +208,11 @@ func (gl *GameLobby) broadcast(msgType MessageType, data []byte) {
 }
 
 func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMessagesChan chan LobbiesMessage) {
-	defer func() {
-		if err := recover(); err != nil {
-			slog.Error("panic in lobby loop", "error", err)
-		}
-	}()
+	// defer func() {
+	// 	if err := recover(); err != nil {
+	// 		slog.Error("panic in lobby loop", "error", err)
+	// 	}
+	// }()
 
 	lslog := slog.With("lobby_idx", gl.index)
 
@@ -361,35 +361,37 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 				player := gl.players[lm.connId]
 				gl.game.setKey(player.left, keyCode, pressed)
 			case MessageTypeStart:
-				if gl.game.status == GameStatusEnded || gl.game.status == GameStatusNone {
-					player := gl.players[lm.connId]
-					if !player.ready {
-						player.ready = true
-						d := make([]byte, 1)
-						if player.left {
-							d[0] = 1
+				if gl.singleplayer || (!gl.singleplayer && len(gl.players) == 2) {
+					if gl.game.status == GameStatusEnded || gl.game.status == GameStatusNone {
+						player := gl.players[lm.connId]
+						if !player.ready {
+							player.ready = true
+							d := make([]byte, 1)
+							if player.left {
+								d[0] = 1
+							}
+							gl.broadcast(MessageTypeReady, d)
 						}
-						gl.broadcast(MessageTypeReady, d)
 					}
-				}
 
-				ready := true
-				for _, p := range gl.players {
-					if p.conn != nil {
-						ready = ready && p.ready
-					}
-				}
-
-				if ready {
+					ready := true
 					for _, p := range gl.players {
 						if p.conn != nil {
-							p.ready = false
+							ready = ready && p.ready
 						}
 					}
 
-					startEvent := gl.game.start(gl.players)
-					gl.broadcast(MessageTypeStarted, startEvent.encode())
-					lslog.Info("game started")
+					if ready {
+						for _, p := range gl.players {
+							if p.conn != nil {
+								p.ready = false
+							}
+						}
+
+						startEvent := gl.game.start(gl.players)
+						gl.broadcast(MessageTypeStarted, startEvent.encode())
+						lslog.Info("game started")
+					}
 				}
 			}
 		case <-updateTicker.C:

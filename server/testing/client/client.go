@@ -26,7 +26,7 @@ func (c *Client) Close() error {
 	return c.Conn.Close(websocket.StatusNormalClosure, "")
 }
 
-func (c *Client) Read(timeout time.Duration) (byte, []byte, error) {
+func (c *Client) Read(timeout time.Duration) (core.MessageType, []byte, error) {
 	ctx, cancel := context.WithTimeout(c.ctx, timeout)
 	defer cancel()
 

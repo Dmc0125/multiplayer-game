@@ -27,6 +27,8 @@ type GameEvent struct {
 	RightPaddleY float32
 	BallX        float32
 	BallY        float32
+	BallVX       float32
+	BallVY       float32
 
 	// GameEventTypeWinner
 	WinnerLeft bool
@@ -39,19 +41,19 @@ func (ge *GameEvent) encode() (out []byte) {
 		out[0] = byte(ge.Type)
 		binary.LittleEndian.PutUint32(out[1:], uint32(ge.Countdown))
 	case GameEventTypeState:
-		out = make([]byte, 1+16)
-		out[0] = byte(ge.Type)
-		offset := 1
+		out = make([]byte, 0)
+		out = append(out, byte(ge.Type))
 
 		encodeFloat32 := func(f float32) {
-			binary.LittleEndian.PutUint32(out[offset:], math.Float32bits(f))
-			offset += 4
+			out = binary.LittleEndian.AppendUint32(out, math.Float32bits(f))
 		}
 
 		encodeFloat32(ge.LeftPaddleY)
 		encodeFloat32(ge.RightPaddleY)
 		encodeFloat32(ge.BallX)
 		encodeFloat32(ge.BallY)
+		encodeFloat32(ge.BallVX)
+		encodeFloat32(ge.BallVY)
 	case GameEventTypeWinner:
 		out = make([]byte, 2)
 		out[0] = byte(ge.Type)
@@ -77,8 +79,8 @@ const BALL_RADIUS = 5.0
 const BALL_SPEED_PER_SECOND = 500.0
 
 type GameBall struct {
-	x, y   float32
-	vx, vy float32
+	X, Y   float32
+	Vx, Vy float32
 }
 
 type KeyCode uint8
@@ -92,11 +94,11 @@ const (
 type GamePlayerState struct {
 	bot     bool
 	keys    map[KeyCode]bool
-	paddleY float32
+	PaddleY float32
 
 	// bot
-	move           bool
-	predictedBallY float32
+	Move           bool
+	PredictedBallY float32
 }
 
 type GameStatus uint8
@@ -130,35 +132,35 @@ func (gs *GameState) start(players map[ConnId]*LobbyPlayer) GameEvent {
 	gs.lastCountdownUpdate = 0
 
 	// ball
-	gs.ball.x = GAME_WIDTH / 2
-	gs.ball.y = GAME_HEIGHT / 2
+	gs.ball.X = GAME_WIDTH / 2
+	gs.ball.Y = GAME_HEIGHT / 2
 
 	// ball velocity
 	deg := rand.Float32()*5 - 10 // [-5, 5]
 	rad := float64(deg * math.Pi / 180)
 
-	gs.ball.vx = float32(math.Cos(rad)) * BALL_SPEED_PER_SECOND
-	gs.ball.vy = float32(math.Sin(rad)) * BALL_SPEED_PER_SECOND
+	gs.ball.Vx = float32(math.Cos(rad)) * BALL_SPEED_PER_SECOND
+	gs.ball.Vy = float32(math.Sin(rad)) * BALL_SPEED_PER_SECOND
 
 	if rand.Float32() < 0.5 {
-		gs.ball.vx = -gs.ball.vx
+		gs.ball.Vx = -gs.ball.Vx
 	}
 
 	for _, p := range players {
 		s := GamePlayerState{
 			bot:     p.conn == nil,
 			keys:    make(map[KeyCode]bool),
-			paddleY: GAME_HEIGHT/2 - PADDLE_HEIGHT/2,
+			PaddleY: GAME_HEIGHT/2 - PADDLE_HEIGHT/2,
 		}
 		if p.left {
 			gs.playerLeft = s
 			if s.bot {
-				predictBallY(gs.ball, &gs.playerLeft, true)
+				PredictBallY(gs.ball, &gs.playerLeft, true)
 			}
 		} else {
 			gs.playerRight = s
 			if s.bot {
-				predictBallY(gs.ball, &gs.playerRight, false)
+				PredictBallY(gs.ball, &gs.playerRight, false)
 			}
 		}
 	}
@@ -190,53 +192,53 @@ func (gs *GameState) advanceTime() {
 	gs.prevFrameEndTime = time.Now()
 }
 
-func predictBallY(ball GameBall, player *GamePlayerState, paddleLeft bool) {
-	if ball.x < PADDLE_LEFT_X || ball.x > PADDLE_RIGHT_X+PADDLE_WIDTH {
+func PredictBallY(ball GameBall, player *GamePlayerState, paddleLeft bool) {
+	if ball.X < PADDLE_LEFT_X || ball.X > PADDLE_RIGHT_X+PADDLE_WIDTH {
 		return
 	}
 
 	updateBall := func(b *GameBall) {
 		fts := float32(FRAME_TIME_SECONDS) / float32(time.Second)
-		b.y += b.vy * fts
-		b.x += b.vx * fts
+		b.Y += b.Vy * fts
+		b.X += b.Vx * fts
 
-		if b.y-BALL_RADIUS < 0 {
-			b.y = BALL_RADIUS
-			b.vy = -b.vy
-		} else if b.y+BALL_RADIUS > GAME_HEIGHT {
-			b.y = GAME_HEIGHT - BALL_RADIUS
-			b.vy = -b.vy
+		if b.Y-BALL_RADIUS < 0 {
+			b.Y = BALL_RADIUS
+			b.Vy = -b.Vy
+		} else if b.Y+BALL_RADIUS > GAME_HEIGHT {
+			b.Y = GAME_HEIGHT - BALL_RADIUS
+			b.Vy = -b.Vy
 		}
 	}
 
-	predictedY := ball.y
+	predictedY := ball.Y
 	ok := false
 
-	if paddleLeft && ball.vx < 0 {
+	if paddleLeft && ball.Vx < 0 {
 		// ball going left
 		ok = true
 		for {
 			updateBall(&ball)
-			if ball.x-BALL_RADIUS < PADDLE_LEFT_X+PADDLE_WIDTH {
-				predictedY = ball.y
+			if ball.X-BALL_RADIUS < PADDLE_LEFT_X+PADDLE_WIDTH {
+				predictedY = ball.Y
 				break
 			}
 		}
-	} else if !paddleLeft && ball.vx > 0 {
+	} else if !paddleLeft && ball.Vx > 0 {
 		// ball going left
 		ok = true
 		for {
 			updateBall(&ball)
-			if ball.x+BALL_RADIUS > PADDLE_RIGHT_X {
-				predictedY = ball.y
+			if ball.X+BALL_RADIUS > PADDLE_RIGHT_X {
+				predictedY = ball.Y
 				break
 			}
 		}
 	}
 
 	if ok {
-		player.predictedBallY = predictedY
-		player.move = true
+		player.PredictedBallY = predictedY
+		player.Move = true
 	}
 
 	return
@@ -268,45 +270,47 @@ func (gs *GameState) update() (event GameEvent) {
 	defer func() {
 		if event.Type == GameEventTypeNone {
 			event.Type = GameEventTypeState
-			event.LeftPaddleY = gs.playerLeft.paddleY
-			event.RightPaddleY = gs.playerRight.paddleY
-			event.BallX = gs.ball.x
-			event.BallY = gs.ball.y
+			event.LeftPaddleY = gs.playerLeft.PaddleY
+			event.RightPaddleY = gs.playerRight.PaddleY
+			event.BallX = gs.ball.X
+			event.BallY = gs.ball.Y
+			event.BallVX = gs.ball.Vx
+			event.BallVY = gs.ball.Vy
 		}
 	}()
 
 	updatePaddlePosition := func(p *GamePlayerState, moveUp, moveDown bool) {
 		if moveUp {
-			p.paddleY += PADDLE_SPEED_PER_SECOND * dt
-			if p.paddleY+PADDLE_HEIGHT > GAME_HEIGHT {
-				p.paddleY = GAME_HEIGHT - PADDLE_HEIGHT
+			p.PaddleY += PADDLE_SPEED_PER_SECOND * dt
+			if p.PaddleY+PADDLE_HEIGHT > GAME_HEIGHT {
+				p.PaddleY = GAME_HEIGHT - PADDLE_HEIGHT
 			}
 		}
 		if moveDown {
-			p.paddleY -= PADDLE_SPEED_PER_SECOND * dt
-			if p.paddleY < 0 {
-				p.paddleY = 0
+			p.PaddleY -= PADDLE_SPEED_PER_SECOND * dt
+			if p.PaddleY < 0 {
+				p.PaddleY = 0
 			}
 		}
 	}
 
 	updatePaddle := func(p *GamePlayerState, left bool) {
 		const deadzone = 10.0
-		if p.bot && p.move {
+		if p.bot && p.Move {
 			var moveUp, moveDown bool
-			if p.predictedBallY > p.paddleY+PADDLE_HEIGHT-deadzone {
+			if p.PredictedBallY > p.PaddleY+PADDLE_HEIGHT-deadzone {
 				moveUp = true
-			} else if p.predictedBallY < p.paddleY+deadzone {
+			} else if p.PredictedBallY < p.PaddleY+deadzone {
 				moveDown = true
 			}
 
 			updatePaddlePosition(p, moveUp, moveDown)
 
-			paddleTop := p.paddleY + PADDLE_HEIGHT
-			paddleBottom := p.paddleY
+			paddleTop := p.PaddleY + PADDLE_HEIGHT
+			paddleBottom := p.PaddleY
 
-			if paddleBottom+deadzone < p.predictedBallY && paddleTop-deadzone > p.predictedBallY {
-				p.move = false
+			if paddleBottom+deadzone < p.PredictedBallY && paddleTop-deadzone > p.PredictedBallY {
+				p.Move = false
 			}
 		} else {
 			updatePaddlePosition(p, p.keys[KeyCodeArrowUp], p.keys[KeyCodeArrowDown])
@@ -318,29 +322,29 @@ func (gs *GameState) update() (event GameEvent) {
 
 	{ // ball
 		ball := &gs.ball
-		ball.x += ball.vx * dt
-		ball.y += ball.vy * dt
+		ball.X += ball.Vx * dt
+		ball.Y += ball.Vy * dt
 
 		switch {
-		case ball.x-BALL_RADIUS < 0:
+		case ball.X-BALL_RADIUS < 0:
 			// player right wins
 			gs.status = GameStatusEnded
 			event.Type = GameEventTypeWinner
 			event.WinnerLeft = false
 			return
-		case ball.x+BALL_RADIUS > GAME_WIDTH:
+		case ball.X+BALL_RADIUS > GAME_WIDTH:
 			// player left wins
 			gs.status = GameStatusEnded
 			event.Type = GameEventTypeWinner
 			event.WinnerLeft = true
 			return
-		case ball.y-BALL_RADIUS < 0:
-			ball.y = BALL_RADIUS
-			ball.vy = -ball.vy
+		case ball.Y-BALL_RADIUS < 0:
+			ball.Y = BALL_RADIUS
+			ball.Vy = -ball.Vy
 			return
-		case ball.y+BALL_RADIUS > GAME_HEIGHT:
-			ball.y = GAME_HEIGHT - BALL_RADIUS
-			ball.vy = -ball.vy
+		case ball.Y+BALL_RADIUS > GAME_HEIGHT:
+			ball.Y = GAME_HEIGHT - BALL_RADIUS
+			ball.Vy = -ball.Vy
 			return
 		}
 	}
@@ -348,7 +352,7 @@ func (gs *GameState) update() (event GameEvent) {
 	bounceAngle := func(ball GameBall, paddleY, vxDir float32) (vx, vy float32) {
 		paddleHalfHeight := PADDLE_HEIGHT / 2
 		paddleCenter := paddleY + paddleHalfHeight
-		hit := ball.y - paddleCenter
+		hit := ball.Y - paddleCenter
 
 		rel := float32(math.Max(-1, math.Min(1, float64(hit/paddleHalfHeight))))
 		angle := 55 * rel
@@ -361,15 +365,15 @@ func (gs *GameState) update() (event GameEvent) {
 	}
 
 	ballCollisionWithPaddles := func(ball *GameBall, p *GamePlayerState, paddleX float32) (collided bool) {
-		ballLeft := ball.x - BALL_RADIUS
-		ballRight := ball.x + BALL_RADIUS
-		ballTop := ball.y + BALL_RADIUS
-		ballBottom := ball.y - BALL_RADIUS
+		ballLeft := ball.X - BALL_RADIUS
+		ballRight := ball.X + BALL_RADIUS
+		ballTop := ball.Y + BALL_RADIUS
+		ballBottom := ball.Y - BALL_RADIUS
 
 		paddleLeft := paddleX
 		paddleRight := paddleX + PADDLE_WIDTH
-		paddleTop := p.paddleY + PADDLE_HEIGHT
-		paddleBottom := p.paddleY
+		paddleTop := p.PaddleY + PADDLE_HEIGHT
+		paddleBottom := p.PaddleY
 
 		xInside := ballRight > paddleLeft && ballLeft < paddleRight
 		yInside := ballTop > paddleBottom && ballBottom < paddleTop
@@ -390,19 +394,19 @@ func (gs *GameState) update() (event GameEvent) {
 
 		if xMin < yMin {
 			if overlapLeft < overlapRight {
-				ball.x = paddleLeft - BALL_RADIUS
-				ball.vx, ball.vy = bounceAngle(*ball, p.paddleY, -1)
+				ball.X = paddleLeft - BALL_RADIUS
+				ball.Vx, ball.Vy = bounceAngle(*ball, p.PaddleY, -1)
 			} else {
-				ball.x = paddleRight + BALL_RADIUS
-				ball.vx, ball.vy = bounceAngle(*ball, p.paddleY, 1)
+				ball.X = paddleRight + BALL_RADIUS
+				ball.Vx, ball.Vy = bounceAngle(*ball, p.PaddleY, 1)
 			}
 		} else {
 			if overlapTop < overlapBottom {
-				ball.y = paddleTop + BALL_RADIUS
+				ball.Y = paddleTop + BALL_RADIUS
 			} else {
-				ball.y = paddleBottom - BALL_RADIUS
+				ball.Y = paddleBottom - BALL_RADIUS
 			}
-			ball.vy = -ball.vy
+			ball.Vy = -ball.Vy
 		}
 
 		return
@@ -410,7 +414,7 @@ func (gs *GameState) update() (event GameEvent) {
 
 	collided := ballCollisionWithPaddles(&gs.ball, &gs.playerLeft, PADDLE_LEFT_X)
 	if collided && gs.playerRight.bot {
-		predictBallY(gs.ball, &gs.playerRight, false)
+		PredictBallY(gs.ball, &gs.playerRight, false)
 	}
 	if collided {
 		return
@@ -418,7 +422,7 @@ func (gs *GameState) update() (event GameEvent) {
 
 	collided = ballCollisionWithPaddles(&gs.ball, &gs.playerRight, PADDLE_RIGHT_X)
 	if collided && gs.playerLeft.bot {
-		predictBallY(gs.ball, &gs.playerLeft, true)
+		PredictBallY(gs.ball, &gs.playerLeft, true)
 	}
 
 	return
