@@ -262,11 +262,12 @@ function useGameConnection(
         }
 
         connection.current.onMessageReady = function (left: boolean) {
+            console.log("ready", left)
             setPlayers((prev) => {
-                if (left) {
-                    prev.left!.ready = true
-                } else {
-                    prev.right!.ready = true
+                if (left && prev.left) {
+                    prev.left.ready = true
+                } else if (!left && prev.right) {
+                    prev.right.ready = true
                 }
                 return { ...prev }
             })
@@ -319,13 +320,20 @@ function useGameConnection(
         }
 
         connection.current.onMessagePlayerLeft = function () {
+            console.log("player left")
             setPlayers((prev) => {
                 if (prev.left?.me === true) {
-                    prev.right = undefined
+                    return {
+                        ...prev,
+                        right: undefined,
+                    }
                 } else {
-                    prev.left = undefined
+                    // left player left, move me to left
+                    return {
+                        left: prev.right,
+                        right: undefined,
+                    }
                 }
-                return { ...prev }
             })
             setStatus("waiting-player-left")
         }

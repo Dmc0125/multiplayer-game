@@ -183,13 +183,16 @@ func (gs *GameState) running() bool {
 	return gs.status == GameStatusPlaying || gs.status == GameStatusCountdown
 }
 
-func (gs *GameState) advanceTime() {
-	dt := time.Since(gs.prevFrameEndTime).Seconds()
+func (gs *GameState) advanceTime(elapsedTime time.Time) {
+	dt := elapsedTime.Sub(gs.prevFrameEndTime)
+	metrics.gameLoopTiming.observer(dt)
+
+	dtSecs := dt.Seconds()
 	if gs.running() {
-		gs.deltaTimeSeconds = dt
-		gs.timeElapsedSeconds += dt
+		gs.deltaTimeSeconds = dtSecs
+		gs.timeElapsedSeconds += dtSecs
 	}
-	gs.prevFrameEndTime = time.Now()
+	gs.prevFrameEndTime = elapsedTime
 }
 
 func PredictBallY(ball GameBall, player *GamePlayerState, paddleLeft bool) {

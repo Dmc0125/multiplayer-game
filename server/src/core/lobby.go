@@ -23,67 +23,9 @@ var nextConnId = func() func() ConnId {
 	}
 }()
 
-type latencyHistorgam struct {
-	name    string
-	limits  []time.Duration
-	buckets []atomic.Uint64
-}
-
-func NewLatencyHistogram(name string) *latencyHistorgam {
-	limits := [...]time.Duration{
-		100 * time.Microsecond,
-		500 * time.Microsecond,
-		1 * time.Millisecond,
-		5 * time.Millisecond,
-		10 * time.Millisecond,
-		25 * time.Millisecond,
-		50 * time.Millisecond,
-		100 * time.Millisecond,
-		250 * time.Millisecond,
-		500 * time.Millisecond,
-		1 * time.Second,
-	}
-	buckets := make([]atomic.Uint64, len(limits)+1)
-	return &latencyHistorgam{
-		name:    name,
-		limits:  limits[:],
-		buckets: buckets,
-	}
-}
-
-func (h *latencyHistorgam) observer(value time.Duration) {
-	for i, limit := range h.limits {
-		if value <= limit {
-			h.buckets[i].Add(1)
-			return
-		}
-	}
-	h.buckets[len(h.buckets)-1].Add(1)
-}
-
-func (h *latencyHistorgam) log(every time.Duration) {
-	ticker := time.NewTicker(every)
-
-	for {
-		<-ticker.C
-
-		attrs := make([]any, 0)
-		for i, limit := range h.limits {
-			value := h.buckets[i].Swap(0)
-			attrs = append(attrs, fmt.Sprintf("<_%s", limit.String()), value)
-
-		}
-
-		attrs = append(attrs, "spill", h.buckets[len(h.buckets)-1].Swap(0))
-		slog.Info(h.name, attrs...)
-	}
-}
-
-var websocketWriteLatency = NewLatencyHistogram("websocket_write_latency")
-
 func connWrite(ctx context.Context, conn *websocket.Conn, mt websocket.MessageType, data []byte) error {
 	start := time.Now()
-	defer websocketWriteLatency.observer(time.Since(start))
+	defer metrics.websocketWriteLatency.observer(time.Since(start))
 	return conn.Write(ctx, mt, data)
 }
 
@@ -258,8 +200,8 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 		m.done <- true
 	}
 
-	handleUpdate := func() {
-		defer gl.game.advanceTime()
+	handleUpdate := func(elapsed time.Time) {
+		defer gl.game.advanceTime(elapsed)
 
 		if !gl.game.running() {
 			return
@@ -271,7 +213,7 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 		case GameEventTypeCountdown, GameEventTypeState:
 			gl.broadcast(MessageTypeGameState, event.encode())
 		case GameEventTypeWinner:
-			lslog.Info("game ended", "winner_left", event.WinnerLeft)
+			lslog.Debug("game ended", "winner_left", event.WinnerLeft)
 			gl.broadcast(MessageTypeGameState, event.encode())
 
 			// update db stats
@@ -330,6 +272,10 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 				gl.game.status = GameStatusNone
 				delete(gl.players, m.connId)
 				gl.broadcast(MessageTypePlayerLeft, nil)
+
+				for _, p := range gl.players {
+					p.left = true
+				}
 
 				m.done <- GameLobbyLeaveResult{index: gl.index, playerCount: len(gl.players)}
 			} else {
@@ -390,12 +336,12 @@ func (gl *GameLobby) start(ctx context.Context, dbConn *pgxpool.Pool, lobbiesMes
 
 						startEvent := gl.game.start(gl.players)
 						gl.broadcast(MessageTypeStarted, startEvent.encode())
-						lslog.Info("game started")
+						lslog.Debug("game started")
 					}
 				}
 			}
 		case <-updateTicker.C:
-			handleUpdate()
+			handleUpdate(time.Now())
 		}
 	}
 }
@@ -603,8 +549,6 @@ func (l *Lobbies) run(dbConn *pgxpool.Pool) {
 }
 
 func gameHandler(prod bool, dbConn *pgxpool.Pool, lobbiesCount int) func(w http.ResponseWriter, r *http.Request) {
-	go websocketWriteLatency.log(10 * time.Second)
-
 	lobbies := newLobbies(lobbiesCount)
 	go lobbies.run(dbConn)
 

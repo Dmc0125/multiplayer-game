@@ -18,6 +18,8 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
+var metrics = newMetrics()
+
 func getRequestIp(r *http.Request) string {
 	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
 		return ip
@@ -169,6 +171,8 @@ func Run(config *Config) error {
 		authConfig.RedirectURL = fmt.Sprintf("http://%s:%d/api/callback", config.Domain, config.Port)
 	}
 	slog.Info("auth config loaded", "redirect_url", authConfig.RedirectURL)
+
+	go metrics.log(10 * time.Second)
 
 	states := newStateStore()
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -9,10 +8,38 @@ import (
 	"time"
 )
 
+type TestState int
+
+const (
+	TestStateNone TestState = iota
+	TestStateRampUp
+	TestStateHold
+	TestStateWaitingForSimulations
+	TestStateWaitingForStats
+	TestStateDone
+)
+
+func (t TestState) String() string {
+	switch t {
+	case TestStateRampUp:
+		return "ramp_up"
+	case TestStateHold:
+		return "hold"
+	case TestStateWaitingForSimulations:
+		return "waiting_for_simulations"
+	case TestStateWaitingForStats:
+		return "waiting_for_stats"
+	case TestStateDone:
+		return "done"
+	default:
+		return "unknown"
+	}
+}
+
 func writeSection(b *strings.Builder, name, color string) {
 	fmt.Fprintf(
 		b,
-		"\n%s%s── %s ─────────────────────────────────────%s\n",
+		"\n\n%s%s%s%s\n",
 		colorBold,
 		color,
 		name,
@@ -111,13 +138,18 @@ func (h *LatencyBuckets) PrintDashboard() {
 const WS_URL = "ws://localhost:8080/api/game"
 
 type Stats struct {
+	elapsedTime time.Time
+
 	handshakeLatency *LatencyBuckets
 	pingPongLatency  *LatencyBuckets
 
 	wsConnectionErrorsTotal atomic.Uint64
 	wsReadErrorsTotal       atomic.Uint64
 	wsWriteErrorsTotal      atomic.Uint64
+	wsWriteTimeoutsTotal    atomic.Uint64
+	wsReadTimeoutsTotal     atomic.Uint64
 	unexpectedMessagesTotal atomic.Int64
+	invalidMessagesTotal    atomic.Int64
 
 	lobbiesJoinedTotal atomic.Uint64
 	lobbiesFullTotal   atomic.Uint64
@@ -125,8 +157,7 @@ type Stats struct {
 	clientsConnectionsAttemptedTotal atomic.Int64
 	clientsConnectedTotal            atomic.Int64
 
-	lobbiesConnectedTotal atomic.Int64
-	gamesStartedTotal     atomic.Int64
+	gamesStartedTotal atomic.Int64
 
 	connectionsActive atomic.Int64
 	gamesActive       atomic.Int64
@@ -136,15 +167,16 @@ type Stats struct {
 	gameStatesEventsReceivedTotal atomic.Int64
 
 	//
-	done  chan struct{}
+	done  chan chan struct{}
 	print bool
 }
 
 func newStats(p bool) *Stats {
 	return &Stats{
+		elapsedTime:      time.Now(),
 		handshakeLatency: NewLatencyBuckets("handshake"),
 		pingPongLatency:  NewLatencyBuckets("ping-pong"),
-		done:             make(chan struct{}),
+		done:             make(chan chan struct{}),
 		print:            p,
 	}
 }
@@ -159,7 +191,7 @@ const (
 	colorCyan   = "\033[36m"
 )
 
-func (s *Stats) printRegularly(ctx context.Context) {
+func (s *Stats) printRegularly(testStateChan chan TestState) {
 	ticker := time.NewTicker(1 * time.Second)
 
 	const (
@@ -172,11 +204,12 @@ func (s *Stats) printRegularly(ctx context.Context) {
 		fmt.Fprint(os.Stdout, colorReset, showCursor, "\n")
 	}()
 
+	testState := <-testStateChan
 	lines := 0
 
 	print := func() {
 		if s.print {
-			output := s.dashboard()
+			output := s.dashboard(testState)
 
 			if lines > 0 {
 				// Move to the beginning of the first previously printed line.
@@ -190,47 +223,30 @@ func (s *Stats) printRegularly(ctx context.Context) {
 
 	for {
 		select {
-		case <-ctx.Done():
+		case sd := <-s.done:
+			testState = TestStateDone
 			print()
-			close(s.done)
+			close(sd)
 			return
+		case testState = <-testStateChan:
 		case <-ticker.C:
 			print()
 		}
 	}
 }
 
-func (s *Stats) dashboard() string {
+func (s *Stats) dashboard(testState TestState) string {
 	var b strings.Builder
 
 	fmt.Fprintf(
 		&b,
-		"%s%s┌──────────────────────────────────────────────┐%s\n",
-		colorBold,
-		colorCyan,
-		colorReset,
-	)
-	fmt.Fprintf(
-		&b,
-		"%s%s│               SERVER STATISTICS              │%s\n",
-		colorBold,
-		colorCyan,
-		colorReset,
-	)
-	fmt.Fprintf(
-		&b,
-		"%s%s└──────────────────────────────────────────────┘%s\n",
-		colorBold,
-		colorCyan,
-		colorReset,
-	)
-	fmt.Fprintf(
-		&b,
-		"%sUpdated: %s%s\n",
+		"%sElapsed time: %s%s\n",
 		colorDim,
-		time.Now().Format("15:04:05"),
+		time.Since(s.elapsedTime).Round(time.Second).String(),
 		colorReset,
 	)
+
+	fmt.Fprintf(&b, "%sTest state: %s%s\n", colorDim, testState, colorReset)
 
 	writeMetric := func(
 		b *strings.Builder,
@@ -299,12 +315,6 @@ func (s *Stats) dashboard() string {
 	)
 	writeMetric(
 		&b,
-		"Lobbies connected",
-		s.lobbiesConnectedTotal.Load(),
-		colorYellow,
-	)
-	writeMetric(
-		&b,
 		"Games started",
 		s.gamesStartedTotal.Load(),
 		colorYellow,
@@ -354,12 +364,36 @@ func (s *Stats) dashboard() string {
 		errorColor(int64(writeErrors)),
 	)
 
+	readTimeouts := s.wsReadTimeoutsTotal.Load()
+	writeMetric(
+		&b,
+		"Read timeouts",
+		readTimeouts,
+		errorColor(int64(readTimeouts)),
+	)
+
+	writeTimeouts := s.wsWriteTimeoutsTotal.Load()
+	writeMetric(
+		&b,
+		"Write timeouts",
+		writeTimeouts,
+		errorColor(int64(writeTimeouts)),
+	)
+
 	unexpectedMessages := s.unexpectedMessagesTotal.Load()
 	writeMetric(
 		&b,
 		"Unexpected messages",
 		unexpectedMessages,
 		errorColor(unexpectedMessages),
+	)
+
+	invalidMessages := s.invalidMessagesTotal.Load()
+	writeMetric(
+		&b,
+		"Invalid messages",
+		invalidMessages,
+		errorColor(invalidMessages),
 	)
 
 	return b.String()
