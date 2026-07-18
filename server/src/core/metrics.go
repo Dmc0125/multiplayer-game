@@ -33,14 +33,16 @@ func (h *histogram) observer(value time.Duration) {
 }
 
 func (h *histogram) toAttrs() (attrs []any) {
+	counts := make([]uint64, len(h.buckets))
 	var totalCount uint64
 	for i := range h.buckets {
-		c := h.buckets[i].Load()
+		c := h.buckets[i].Swap(0)
+		counts[i] = c
 		totalCount += c
 	}
 
 	for i, limit := range h.limits {
-		value := h.buckets[i].Swap(0)
+		value := counts[i]
 		var fraction float64
 		if totalCount != 0 {
 			fraction = (float64(value) / float64(totalCount)) * 100
@@ -50,7 +52,7 @@ func (h *histogram) toAttrs() (attrs []any) {
 
 	}
 
-	c := h.buckets[len(h.buckets)-1].Swap(0)
+	c := counts[len(h.buckets)-1]
 	var fraction float64
 	if totalCount != 0 {
 		fraction = (float64(c) / float64(totalCount)) * 100
