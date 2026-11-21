@@ -18,8 +18,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-var authConfig *oauth2.Config
-
 type StateStore struct {
 	states map[string]time.Time
 	lock   sync.Mutex
@@ -100,7 +98,7 @@ func getUserIdFromSession(dbConn *pgxpool.Pool, r *http.Request) (userId, status
 	return
 }
 
-func authHandler(dbConn *pgxpool.Pool, states *StateStore, clientRedirectUrl string) func(w http.ResponseWriter, r *http.Request) {
+func authHandler(dbConn *pgxpool.Pool, states *StateStore, authConfig *oauth2.Config, clientRedirectUrl string) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rslog := getRequestLogger(r)
 		_, status, err := getUserIdFromSession(dbConn, r)
@@ -120,7 +118,7 @@ func authHandler(dbConn *pgxpool.Pool, states *StateStore, clientRedirectUrl str
 	}
 }
 
-func callbackHandler(dbConn *pgxpool.Pool, states *StateStore, clientRedirectUrl, domain string, prod bool) func(w http.ResponseWriter, r *http.Request) {
+func callbackHandler(dbConn *pgxpool.Pool, states *StateStore, authConfig *oauth2.Config, clientRedirectUrl, domain string, prod bool) func(w http.ResponseWriter, r *http.Request) {
 	prefixes := []string{"Paddle", "Smash", "Spin", "Turbo", "Bouncy", "Rally", "Woosh", "Bloop", "Slap", "Bonk", "Zippy", "Twirl", "Whack", "Speedy", "Smashy", "Zappy", "Wiggly", "Floppy", "Boomy", "Pong"}
 	suffixes := []string{"Paddle", "Smasher", "Spinner", "Bopper", "Whacker", "Bonker", "Rallyer", "Lobber", "Dinker", "Slapper", "Banger", "Pinger", "Swoosher", "Topspin", "Dropshot", "Volley", "Dasher", "Popper", "Zipper", "Ace"}
 

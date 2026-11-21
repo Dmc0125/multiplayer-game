@@ -40,6 +40,7 @@ services:
   db:
     image: postgres:17-alpine
     container_name: paddle-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: pwd
@@ -192,7 +193,3 @@ Place env variables in:
     => /opt/paddle-game/shared/server.env - example in server/example.env
     => /opt/paddle-game/shared/client.env - example in client/example.env
 "
-
-
-
-

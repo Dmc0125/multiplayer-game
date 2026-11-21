@@ -177,8 +177,8 @@ func Run(config *Config) error {
 	states := newStateStore()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/auth", authHandler(dbConn, states, config.ClientRedirectUrl))
-	mux.HandleFunc("/api/callback", callbackHandler(dbConn, states, config.ClientRedirectUrl, config.Domain, config.Prod))
+	mux.HandleFunc("/api/auth", authHandler(dbConn, states, authConfig, config.ClientRedirectUrl))
+	mux.HandleFunc("/api/callback", callbackHandler(dbConn, states, authConfig, config.ClientRedirectUrl, config.Domain, config.Prod))
 	mux.HandleFunc("/api/logout", authLogoutHandler(dbConn, config.ClientRedirectUrl, config.Domain, config.Prod))
 	mux.HandleFunc("/api/game", gameHandler(config.Prod, dbConn, config.LobbiesCount))
 
